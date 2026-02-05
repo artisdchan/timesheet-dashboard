@@ -1176,7 +1176,22 @@ function handleDelete(entry: TimeEntry) {
   .header {
     flex-direction: column;
     gap: 0.75rem;
-    align-items: flex-start;
+    align-items: stretch;
+  }
+  
+  .header-left {
+    text-align: center;
+  }
+  
+  .header-actions {
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  
+  .btn-primary {
+    flex: 1;
+    min-width: 120px;
+    justify-content: center;
   }
   
   .entry-card {
@@ -1194,6 +1209,22 @@ function handleDelete(entry: TimeEntry) {
     margin-top: 0.5rem;
     padding-top: 0.5rem;
     border-top: 1px solid #e2e8f0;
+  }
+}
+
+@media (max-width: 480px) {
+  .header-actions {
+    gap: 0.5rem;
+  }
+  
+  .btn-icon {
+    width: 40px;
+    height: 40px;
+  }
+  
+  .btn-icon svg {
+    width: 20px;
+    height: 20px;
   }
 }
 </style>
