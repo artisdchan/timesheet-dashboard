@@ -188,6 +188,7 @@ const weekDays = computed(() => {
       hours: dayHours,
       isToday: format(date, 'yyyy-MM-dd') === format(new Date(), 'yyyy-MM-dd'),
       isSelected: format(date, 'yyyy-MM-dd') === format(currentDate.value, 'yyyy-MM-dd'),
+      isLowHours: dayHours > 0 && dayHours < 8, // Less than 8 hours but has some work
     })
   }
   
@@ -392,7 +393,8 @@ function handleDelete(entry: TimeEntry) {
           :class="['day-pill', { 
             'is-today': day.isToday, 
             'is-selected': day.isSelected,
-            'has-hours': day.hours > 0 
+            'has-hours': day.hours > 0,
+            'is-low-hours': day.isLowHours
           }]"
           @click="selectDay(day.date)"
         >
@@ -802,6 +804,25 @@ function handleDelete(entry: TimeEntry) {
 
 .day-pill.is-selected.has-hours {
   background: #667eea;
+}
+
+.day-pill.is-low-hours {
+  background: #fff5f5;
+  border-color: #fc8181;
+}
+
+.day-pill.is-low-hours .day-hours {
+  color: #e53e3e;
+  font-weight: 700;
+}
+
+.day-pill.is-selected.is-low-hours {
+  background: #667eea;
+  border-color: #667eea;
+}
+
+.day-pill.is-selected.is-low-hours .day-hours {
+  color: rgba(255,255,255,0.9);
 }
 
 .day-name {
