@@ -143,6 +143,16 @@ class GraphService {
     }) as Promise<PlannerTask>
   }
 
+  // Delete a task
+  async deleteTask(taskId: string, etag: string): Promise<void> {
+    await this.fetchWithAuth(`/planner/tasks/${taskId}`, {
+      method: 'DELETE',
+      headers: {
+        'If-Match': etag,
+      },
+    })
+  }
+
   // Clear bucket cache
   clearBucketCache(): void {
     bucketCache.clear()

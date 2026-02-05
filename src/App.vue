@@ -115,7 +115,7 @@ async function loadEntries() {
 }
 
 // Handle adding a new time entry - creates a Planner task
-async function handleAddEntry(entryData: { projectId: string; bucketId: string; description: string; hours: number; date?: Date }) {
+async function handleAddEntry(entryData: { projectId: string; bucketId: string; description: string; hours: number[]; date?: Date }) {
   loading.value = true
   error.value = null
   
@@ -129,7 +129,7 @@ async function handleAddEntry(entryData: { projectId: string; bucketId: string; 
     // Get current user
     const me = await graphService.getMe()
     
-    // Determine hours category based on hours value
+    // Map hours to categories (support multiple)
     // category1=0.5h, category2=1h, category3=2h, category4=3h, category5=4h
     // category6=5h, category7=6h, category8=7h, category9=8h
     const hoursCategoryMap: Record<number, string> = {
@@ -144,7 +144,14 @@ async function handleAddEntry(entryData: { projectId: string; bucketId: string; 
       8: 'category9',    // 8h
     }
     
-    const category = hoursCategoryMap[entryData.hours] || 'category4'
+    // Build appliedCategories from selected hours (can have multiple)
+    const appliedCategories: Record<string, boolean> = {}
+    for (const hour of entryData.hours) {
+      const category = hoursCategoryMap[hour]
+      if (category) {
+        appliedCategories[category] = true
+      }
+    }
     
     // Set due date (default to today if not provided)
     const dueDate = entryData.date || new Date()
@@ -173,9 +180,7 @@ async function handleAddEntry(entryData: { projectId: string; bucketId: string; 
           orderHint: ' !'
         }
       },
-      appliedCategories: {
-        [category]: true
-      }
+      appliedCategories: appliedCategories
     })
     
     // Refresh entries
@@ -184,6 +189,107 @@ async function handleAddEntry(entryData: { projectId: string; bucketId: string; 
   } catch (err) {
     console.error('Failed to create entry:', err)
     error.value = 'Failed to add time entry. Please try again.'
+  } finally {
+    loading.value = false
+  }
+}
+
+// Handle editing an existing time entry
+async function handleEditEntry(entryData: { 
+  taskId: string
+  etag: string
+  projectId: string
+  bucketId: string
+  description: string
+  hours: number[]
+  date: Date
+}) {
+  loading.value = true
+  error.value = null
+  
+  try {
+    // Verify the bucket belongs to this project
+    const bucket = buckets.value.find(b => b.id === entryData.bucketId && b.planId === entryData.projectId)
+    if (!bucket) {
+      throw new Error('Invalid bucket selected')
+    }
+    
+    // Get current user
+    const me = await graphService.getMe()
+    
+    // Map hours to categories (support multiple)
+    const hoursCategoryMap: Record<number, string> = {
+      0.5: 'category1', 1: 'category2', 2: 'category3', 3: 'category4', 4: 'category5',
+      5: 'category6', 6: 'category7', 7: 'category8', 8: 'category9'
+    }
+    
+    // Build appliedCategories - must explicitly clear old categories by setting to false
+    // Planner API merges categories, so we need to set all to false first, then set new ones to true
+    const appliedCategories: Record<string, boolean> = {
+      category1: false, category2: false, category3: false, 
+      category4: false, category5: false, category6: false,
+      category7: false, category8: false, category9: false
+    }
+    
+    // Set selected hours to true
+    for (const hour of entryData.hours) {
+      const category = hoursCategoryMap[hour]
+      if (category) {
+        appliedCategories[category] = true
+      }
+    }
+    
+    // Set due date
+    const dueDate = entryData.date
+    dueDate.setHours(0, 0, 0, 0)
+    
+    // Format date as dd/mm/yyyy
+    const day = dueDate.getDate().toString().padStart(2, '0')
+    const month = (dueDate.getMonth() + 1).toString().padStart(2, '0')
+    const year = dueDate.getFullYear()
+    const formattedDate = `${day}/${month}/${year}`
+    
+    // Build title: BUCKET_NAME || [User name] dd/mm/yyyy What have done
+    const title = `${bucket.name} || [${me.displayName}] ${formattedDate} ${entryData.description}`
+    
+    // Update task in Planner
+    await graphService.updateTask(
+      entryData.taskId,
+      {
+        planId: entryData.projectId,
+        bucketId: entryData.bucketId,
+        title: title,
+        dueDateTime: dueDate.toISOString(),
+        appliedCategories: appliedCategories
+      },
+      entryData.etag
+    )
+    
+    // Refresh entries
+    await loadEntries()
+    
+  } catch (err) {
+    console.error('Failed to update entry:', err)
+    error.value = 'Failed to update time entry. Please try again.'
+  } finally {
+    loading.value = false
+  }
+}
+
+// Handle deleting a time entry
+async function handleDeleteEntry(taskId: string, etag: string) {
+  loading.value = true
+  error.value = null
+  
+  try {
+    await graphService.deleteTask(taskId, etag)
+    
+    // Refresh entries
+    await loadEntries()
+    
+  } catch (err) {
+    console.error('Failed to delete entry:', err)
+    error.value = 'Failed to delete time entry. Please try again.'
   } finally {
     loading.value = false
   }
@@ -228,6 +334,8 @@ async function handleRefresh() {
       :buckets="buckets"
       :loading="loading"
       @add-entry="handleAddEntry"
+      @edit-entry="handleEditEntry"
+      @delete-entry="handleDeleteEntry"
       @refresh="handleRefresh"
       @logout="handleLogout"
     />

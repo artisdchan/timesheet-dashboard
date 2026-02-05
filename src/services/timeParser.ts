@@ -52,31 +52,43 @@ function getCategoryDisplayLabel(category: string): string {
   return `${hours}h`
 }
 
-// Parse hours from categories (labels)
+// Parse hours from categories (labels) - sums all active categories
 export function parseHoursFromCategories(categories: Record<string, boolean>): { hours: number; categoryName: string; displayLabel: string } | null {
-  // First try category numbers (category1, category2, etc.)
+  let totalHours = 0
+  const activeCategories: string[] = []
+
+  // Sum all active category hours (category2 + category3 = 1h + 2h = 3h)
   for (const [category, isApplied] of Object.entries(categories)) {
     if (isApplied && CATEGORY_HOURS_MAP[category] !== undefined) {
-      return {
-        hours: CATEGORY_HOURS_MAP[category],
-        categoryName: category,
-        displayLabel: getCategoryDisplayLabel(category)
+      totalHours += CATEGORY_HOURS_MAP[category]
+      activeCategories.push(category)
+    }
+  }
+
+  // If no standard categories found, fallback to direct hour labels
+  if (activeCategories.length === 0) {
+    for (const [category, isApplied] of Object.entries(categories)) {
+      if (isApplied && DIRECT_HOURS_MAP[category] !== undefined) {
+        totalHours += DIRECT_HOURS_MAP[category]
+        activeCategories.push(category)
       }
     }
   }
 
-  // Fallback: try direct hour labels (2h, 4h, etc.)
-  for (const [category, isApplied] of Object.entries(categories)) {
-    if (isApplied && DIRECT_HOURS_MAP[category] !== undefined) {
-      return {
-        hours: DIRECT_HOURS_MAP[category],
-        categoryName: category,
-        displayLabel: category
-      }
-    }
+  if (activeCategories.length === 0) {
+    return null
   }
 
-  return null
+  // Build display label showing combination (e.g., "1h+2h = 3h")
+  const categoryLabel = activeCategories.length > 1
+    ? `${activeCategories.map(c => getCategoryDisplayLabel(c)).join('+')} = ${totalHours}h`
+    : getCategoryDisplayLabel(activeCategories[0]!)
+
+  return {
+    hours: totalHours,
+    categoryName: activeCategories.join(','),
+    displayLabel: categoryLabel
+  }
 }
 
 // Convert PlannerTask to TimeEntry - using data from /me/planner/tasks only

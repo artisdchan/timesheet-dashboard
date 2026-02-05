@@ -16,6 +16,7 @@ export interface PlannerTask {
   title: string
   planId: string
   bucketId: string
+  '@odata.etag'?: string
   createdBy: {
     user: {
       id: string
