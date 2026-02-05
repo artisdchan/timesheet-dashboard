@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted } from 'vue'
 import LoginView from './components/LoginView.vue'
-import TimesheetView from './components/TimesheetView.vue'
-import CreateTaskModal from './components/CreateTaskModal.vue'
+import DailyTimesheetView from './components/DailyTimesheetView.vue'
 import authService from './services/auth'
 import graphService from './services/graph'
 import { taskToTimeEntry } from './services/timeParser'
@@ -12,15 +11,13 @@ import type { TimeEntry, PlannerPlan, PlannerBucket } from './types/planner'
 const isAuthenticated = ref(false)
 const isInitializing = ref(true)
 const entries = ref<TimeEntry[]>([])
-const allMyTasks = ref<TimeEntry[]>([])
 const plans = ref<PlannerPlan[]>([])
 const buckets = ref<PlannerBucket[]>([])
-const selectedPlanId = ref<string | null>(null)
-const selectedBucketId = ref<string | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
-const showCreateModal = ref(false)
-const creatingTask = ref(false)
+
+// Cache for bucket lookup
+const bucketMap = ref(new Map<string, PlannerBucket>())
 
 // Initialize auth on mount
 onMounted(async () => {
@@ -39,38 +36,19 @@ onMounted(async () => {
   }
 })
 
-// Watch for plan selection changes
-watch(selectedPlanId, async (newPlanId) => {
-  if (!newPlanId) {
-    buckets.value = []
-    selectedBucketId.value = null
-    entries.value = []
-    allMyTasks.value = []
-    return
-  }
-  
-  await loadPlanData(newPlanId)
-})
-
-// Watch for bucket selection - filter tasks client-side
-watch(selectedBucketId, (newBucketId) => {
-  console.log('Bucket selection changed:', newBucketId)
-  if (!newBucketId) {
-    entries.value = allMyTasks.value
-    console.log('Showing all tasks:', entries.value.length)
-  } else {
-    const bucketName = buckets.value.find(b => b.id === newBucketId)?.name
-    entries.value = allMyTasks.value.filter(task => task.bucketName === bucketName)
-    console.log('Filtered by bucket:', bucketName, 'Tasks:', entries.value.length)
-  }
-})
-
-function handleLogin() {
+async function handleLogin() {
   error.value = null
-  authService.login().catch((err) => {
+  try {
+    await authService.login()
+    isAuthenticated.value = authService.isAuthenticated()
+    
+    if (isAuthenticated.value) {
+      await loadPlans()
+    }
+  } catch (err) {
     console.error('Login error:', err)
     error.value = 'Login failed. Please check your Azure AD configuration.'
-  })
+  }
 }
 
 async function handleLogout() {
@@ -78,11 +56,9 @@ async function handleLogout() {
     await authService.logout()
     isAuthenticated.value = false
     entries.value = []
-    allMyTasks.value = []
-    buckets.value = []
     plans.value = []
-    selectedPlanId.value = null
-    selectedBucketId.value = null
+    buckets.value = []
+    bucketMap.value.clear()
   } catch (err) {
     console.error('Logout error:', err)
   }
@@ -92,6 +68,20 @@ async function loadPlans() {
   loading.value = true
   try {
     plans.value = await graphService.getPlans()
+    
+    // Load buckets for all plans
+    for (const plan of plans.value) {
+      try {
+        const planBuckets = await graphService.getBuckets(plan.id)
+        planBuckets.forEach(b => bucketMap.value.set(b.id, b))
+        buckets.value.push(...planBuckets)
+      } catch (err) {
+        console.warn(`Failed to load buckets for plan ${plan.id}:`, err)
+      }
+    }
+    
+    // Load entries after plans and buckets are loaded
+    await loadEntries()
   } catch (err) {
     console.error('Failed to load plans:', err)
     plans.value = []
@@ -100,98 +90,83 @@ async function loadPlans() {
   }
 }
 
-async function loadPlanData(planId: string) {
+async function loadEntries() {
   loading.value = true
-  error.value = null
-  
   try {
-    // Load buckets for the plan
-    buckets.value = await graphService.getBuckets(planId)
-    console.log('Loaded buckets:', buckets.value)
-    
-    // Get MY tasks from last 3 months - ONE API call with date filter
+    // Get MY tasks from last 3 months
     const myTasks = await graphService.getMyTasks(3)
-    console.log('Loaded my tasks:', myTasks.length)
     
-    // Filter tasks by selected plan
-    const planTasks = myTasks.filter(t => t.planId === planId)
-    console.log('Tasks for this plan:', planTasks.length)
-    
-    if (planTasks.length === 0) {
-      allMyTasks.value = []
-      entries.value = []
-      selectedBucketId.value = null
-      loading.value = false
-      return
-    }
-    
-    // Create bucket name lookup map
-    const bucketNameMap = new Map(buckets.value.map(b => [b.id, b.name]))
-    
-    // Convert to time entries (no details API needed!)
-    const timeEntries = planTasks.map(task => {
-      const bucketName = bucketNameMap.get(task.bucketId) || 'Unknown'
-      return taskToTimeEntry(task, bucketName)
+    // Convert to time entries
+    const timeEntries = myTasks.map(task => {
+      const bucket = bucketMap.value.get(task.bucketId)
+      return taskToTimeEntry(task, bucket?.name)
     })
     
-    console.log('Converted entries:', timeEntries.length)
-    console.log('First entry:', timeEntries[0])
-    
     // Sort by date (newest first)
-    allMyTasks.value = timeEntries.sort((a, b) => b.date.getTime() - a.date.getTime())
+    entries.value = timeEntries.sort((a, b) => b.date.getTime() - a.date.getTime())
     
-    // Show all my tasks initially
-    entries.value = allMyTasks.value
-    selectedBucketId.value = null
-    
-    console.log('allMyTasks set:', allMyTasks.value.length)
-    console.log('entries set:', entries.value.length)
-    
+    console.log('Loaded entries:', entries.value.length)
   } catch (err) {
-    console.error('Failed to load plan data:', err)
-    if (err instanceof Error && err.message.includes('429')) {
-      error.value = 'Too many requests. Please wait a moment and try again.'
-    } else {
-      error.value = 'Failed to load tasks. Please try again.'
-    }
-    entries.value = []
-    allMyTasks.value = []
+    console.error('Failed to load entries:', err)
+    error.value = 'Failed to load tasks. Please try again.'
   } finally {
     loading.value = false
   }
 }
 
-async function handleRefresh() {
-  if (selectedPlanId.value) {
-    await loadPlanData(selectedPlanId.value)
-  }
-}
-
-async function handleCreateTask(taskData: {
-  title: string
-  bucketId: string
-  dueDate: string
-  hoursCategory: string
-  priority: number
-  percentComplete: number
-}) {
-  if (!selectedPlanId.value) return
-  
-  creatingTask.value = true
+// Handle adding a new time entry - creates a Planner task
+async function handleAddEntry(entryData: { projectId: string; bucketId: string; description: string; hours: number; date?: Date }) {
+  loading.value = true
   error.value = null
   
   try {
-    // Get current user info
+    // Verify the bucket belongs to this project
+    const bucket = buckets.value.find(b => b.id === entryData.bucketId && b.planId === entryData.projectId)
+    if (!bucket) {
+      throw new Error('Invalid bucket selected')
+    }
+    
+    // Get current user
     const me = await graphService.getMe()
     
-    // Create task
+    // Determine hours category based on hours value
+    // category1=0.5h, category2=1h, category3=2h, category4=3h, category5=4h
+    // category6=5h, category7=6h, category8=7h, category9=8h
+    const hoursCategoryMap: Record<number, string> = {
+      0.5: 'category1',  // 30m
+      1: 'category2',    // 1h
+      2: 'category3',    // 2h
+      3: 'category4',    // 3h
+      4: 'category5',    // 4h
+      5: 'category6',    // 5h
+      6: 'category7',    // 6h
+      7: 'category8',    // 7h
+      8: 'category9',    // 8h
+    }
+    
+    const category = hoursCategoryMap[entryData.hours] || 'category4'
+    
+    // Set due date (default to today if not provided)
+    const dueDate = entryData.date || new Date()
+    dueDate.setHours(0, 0, 0, 0)
+    
+    // Format date as dd/mm/yyyy
+    const day = dueDate.getDate().toString().padStart(2, '0')
+    const month = (dueDate.getMonth() + 1).toString().padStart(2, '0')
+    const year = dueDate.getFullYear()
+    const formattedDate = `${day}/${month}/${year}`
+    
+    // Build title: BUCKET_NAME || [User name] dd/mm/yyyy What have done
+    const title = `${bucket.name} || [${me.displayName}] ${formattedDate} ${entryData.description}`
+    
+    // Create task in Planner
     await graphService.createTask({
-      planId: selectedPlanId.value,
-      bucketId: taskData.bucketId,
-      title: taskData.title,
-      dueDateTime: taskData.dueDate,
-      priority: taskData.priority,
-      percentComplete: taskData.percentComplete,
+      planId: entryData.projectId,
+      bucketId: entryData.bucketId,
+      title: title,
+      dueDateTime: dueDate.toISOString(),
+      priority: 5, // Medium
+      percentComplete: 100, // Mark as complete since it's logged time
       assignments: {
         [me.id]: {
           '@odata.type': '#microsoft.graph.plannerAssignment',
@@ -199,22 +174,23 @@ async function handleCreateTask(taskData: {
         }
       },
       appliedCategories: {
-        [taskData.hoursCategory]: true
+        [category]: true
       }
     })
     
-    // Close modal
-    showCreateModal.value = false
-    
-    // Refresh task list
-    await loadPlanData(selectedPlanId.value)
+    // Refresh entries
+    await loadEntries()
     
   } catch (err) {
-    console.error('Failed to create task:', err)
-    error.value = 'Failed to create task. Please try again.'
+    console.error('Failed to create entry:', err)
+    error.value = 'Failed to add time entry. Please try again.'
   } finally {
-    creatingTask.value = false
+    loading.value = false
   }
+}
+
+async function handleRefresh() {
+  await loadEntries()
 }
 </script>
 
@@ -244,31 +220,16 @@ async function handleCreateTask(taskData: {
       @login="handleLogin"
     />
 
-    <!-- Timesheet View -->
-    <TimesheetView
+    <!-- Daily Timesheet View -->
+    <DailyTimesheetView
       v-else
       :entries="entries"
       :plans="plans"
       :buckets="buckets"
-      :all-tasks="allMyTasks"
-      :selected-plan-id="selectedPlanId"
-      :selected-bucket-id="selectedBucketId"
       :loading="loading"
-      @update:selected-plan-id="selectedPlanId = $event"
-      @update:selected-bucket-id="selectedBucketId = $event"
+      @add-entry="handleAddEntry"
       @refresh="handleRefresh"
       @logout="handleLogout"
-      @create-task="showCreateModal = true"
-    />
-
-    <!-- Create Task Modal -->
-    <CreateTaskModal
-      v-if="selectedPlanId"
-      :show="showCreateModal"
-      :buckets="buckets"
-      :loading="creatingTask"
-      @close="showCreateModal = false"
-      @create="handleCreateTask"
     />
   </div>
 </template>
