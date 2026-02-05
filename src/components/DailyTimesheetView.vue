@@ -25,11 +25,20 @@ const selectedProjectId = ref('')
 const selectedBucketId = ref('')
 const description = ref('')
 const hours = ref(2)
+const entryDate = ref(new Date())
 
 // Filter buckets by selected project
 const availableBuckets = computed(() => {
   if (!selectedProjectId.value) return []
   return props.buckets.filter(b => b.planId === selectedProjectId.value)
+})
+
+// Date input value (YYYY-MM-DD format for input type="date")
+const dateInputValue = computed({
+  get: () => format(entryDate.value, 'yyyy-MM-dd'),
+  set: (value: string) => {
+    entryDate.value = new Date(value + 'T00:00:00')
+  }
 })
 
 // Watch when project changes - auto-select first bucket
@@ -88,12 +97,13 @@ function handleAddEntry() {
     bucketId: selectedBucketId.value,
     description: description.value.trim(),
     hours: hours.value,
-    date: currentDate.value,
+    date: entryDate.value,
   })
   
   // Reset form
   description.value = ''
   hours.value = 2
+  entryDate.value = new Date()
   showAddForm.value = false
 }
 
@@ -140,6 +150,12 @@ const weekDays = computed(() => {
 function selectDay(date: Date) {
   currentDate.value = date
 }
+
+function openAddForm() {
+  // Initialize entry date to currently selected date
+  entryDate.value = new Date(currentDate.value)
+  showAddForm.value = true
+}
 </script>
 
 <template>
@@ -152,7 +168,7 @@ function selectDay(date: Date) {
       </div>
       
       <div class="header-actions">
-        <button class="btn-primary" @click="showAddForm = true">
+        <button class="btn-primary" @click="openAddForm()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="12" y1="5" x2="12" y2="19"/>
             <line x1="5" y1="12" x2="19" y2="12"/>
@@ -253,6 +269,16 @@ function selectDay(date: Date) {
           </select>
         </div>
         
+        <!-- Date -->
+        <div class="form-group">
+          <label>Date *</label>
+          <input 
+            type="date" 
+            v-model="dateInputValue"
+            class="date-input"
+          />
+        </div>
+        
         <!-- Description -->
         <div class="form-group">
           <label>What did you do? *</label>
@@ -302,7 +328,7 @@ function selectDay(date: Date) {
           <line x1="12" y1="16" x2="12.01" y2="16"/>
         </svg>
         <p>No entries for {{ format(currentDate, 'MMM d') }}</p>
-        <button class="btn-link" @click="showAddForm = true">Add your first entry</button>
+        <button class="btn-link" @click="openAddForm()">Add your first entry</button>
       </div>
 
       <div v-else class="entries-list">
@@ -602,12 +628,18 @@ function selectDay(date: Date) {
 }
 
 .form-group select,
-.form-group textarea {
+.form-group textarea,
+.form-group input[type="date"] {
   width: 100%;
   padding: 0.625rem;
   border: 1px solid #e2e8f0;
   border-radius: 6px;
   font-size: 0.9rem;
+  font-family: inherit;
+}
+
+.form-group input[type="date"].date-input {
+  cursor: pointer;
 }
 
 .form-group select:disabled {
