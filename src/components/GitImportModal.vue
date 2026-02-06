@@ -48,7 +48,7 @@ const emit = defineEmits<{
 
 const loading = ref(false)
 const error = ref('')
-const sinceDate = ref(format(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), 'yyyy-MM-dd'))
+const sinceDate = ref(format(new Date(), 'yyyy-MM-dd'))
 const commits = ref<GitCommit[]>([])
 const draftEntries = ref<DraftEntry[]>([])
 
