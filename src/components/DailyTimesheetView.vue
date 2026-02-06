@@ -2,6 +2,8 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import { format, addDays, startOfWeek, endOfWeek } from 'date-fns'
 import type { TimeEntry, PlannerPlan, PlannerBucket } from '../types/planner'
+import GitSettings from './GitSettings.vue'
+import GitImportModal from './GitImportModal.vue'
 
 const props = defineProps<{
   entries: TimeEntry[]
@@ -14,6 +16,7 @@ const emit = defineEmits<{
   'addEntry': [entry: { projectId: string; bucketId: string; description: string; hours: number[]; date: Date }]
   'editEntry': [entry: { taskId: string; etag: string; projectId: string; bucketId: string; description: string; hours: number[]; date: Date }]
   'deleteEntry': [taskId: string, etag: string]
+  'gitImport': [entries: Array<{ projectId: string; bucketId: string; description: string; hours: number[]; date: Date }>]
   'refresh': []
   'logout': []
 }>()
@@ -39,6 +42,49 @@ const editBucketId = ref('')
 const editDescription = ref('')
 const editSelectedHours = ref<number[]>([2]) // Multi-select hours
 const editDate = ref(new Date())
+
+// Git import
+const showGitSettings = ref(false)
+const showGitImport = ref(false)
+
+// Load Git repos from localStorage and merge with account tokens
+const gitRepos = computed(() => {
+  const savedRepos = localStorage.getItem('git_repos')
+  const savedAccounts = localStorage.getItem('git_accounts')
+  
+  if (!savedRepos) return []
+  
+  const repos = JSON.parse(savedRepos)
+  const accounts = savedAccounts ? JSON.parse(savedAccounts) : []
+  
+  console.log('[DEBUG] gitRepos - raw repos:', repos.length, 'accounts:', accounts.length)
+  console.log('[DEBUG] Accounts:', accounts.map((a: any) => ({ provider: a.provider, username: a.username, gitlabUrl: a.gitlabUrl })))
+  
+  // Add token, gitlabUrl, and commitAuthor to each repo from its account
+  return repos.map((repo: any) => {
+    // Find account with matching provider
+    let account
+    
+    if (repo.provider === 'github') {
+      account = accounts.find((a: any) => a.provider === 'github')
+    } else if (repo.provider === 'gitlab') {
+      account = accounts.find((a: any) => 
+        a.provider === 'gitlab' && 
+        (repo.gitlabUrl ? a.gitlabUrl === repo.gitlabUrl : true)
+      )
+      if (!account && !repo.gitlabUrl) {
+        account = accounts.find((a: any) => a.provider === 'gitlab')
+      }
+    }
+    
+    return {
+      ...repo,
+      token: account?.token || '',
+      gitlabUrl: account?.gitlabUrl || repo.gitlabUrl || 'https://gitlab.com',
+      commitAuthor: account?.commitAuthor || account?.username || ''
+    }
+  })
+})
 
 // Filter buckets by selected project
 const availableBuckets = computed(() => {
@@ -342,6 +388,12 @@ function handleDelete(entry: TimeEntry) {
   }
   emit('deleteEntry', entry.id, etag)
 }
+
+// Handle Git import - emit to parent for batch creation
+function handleGitImport(entries: Array<{ projectId: string; bucketId: string; description: string; hours: number[]; date: Date }>) {
+  emit('gitImport', entries)
+  showGitImport.value = false
+}
 </script>
 
 <template>
@@ -367,6 +419,19 @@ function handleDelete(entry: TimeEntry) {
             <polyline points="23 4 23 10 17 10"/>
             <polyline points="1 20 1 14 7 14"/>
             <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+        </button>
+        
+        <button class="btn-icon" @click="showGitImport = true" title="Import from Git">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+          </svg>
+        </button>
+        
+        <button class="btn-icon" @click="showGitSettings = true" title="Git Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
           </svg>
         </button>
         
@@ -649,6 +714,24 @@ function handleDelete(entry: TimeEntry) {
         </div>
       </div>
     </div>
+    
+    <!-- Git Settings Modal -->
+    <GitSettings 
+      v-if="showGitSettings"
+      :plans="plans"
+      :buckets="buckets"
+      @close="showGitSettings = false"
+    />
+    
+    <!-- Git Import Modal -->
+    <GitImportModal
+      v-if="showGitImport"
+      :repos="gitRepos"
+      :plans="plans"
+      :buckets="buckets"
+      @close="showGitImport = false"
+      @import="handleGitImport"
+    />
   </div>
 </template>
 

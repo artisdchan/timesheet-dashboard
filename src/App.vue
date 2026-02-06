@@ -164,7 +164,13 @@ async function handleAddEntry(entryData: { projectId: string; bucketId: string; 
     const formattedDate = `${day}/${month}/${year}`
     
     // Build title: BUCKET_NAME || [User name] dd/mm/yyyy What have done
-    const title = `${bucket.name} || [${me.displayName}] ${formattedDate} ${entryData.description}`
+    // Max 255 characters for Planner title
+    const prefix = `${bucket.name} || [${me.displayName}] ${formattedDate} `
+    const maxDescLength = 255 - prefix.length
+    const description = entryData.description.length > maxDescLength 
+      ? entryData.description.substring(0, maxDescLength - 3) + '...'
+      : entryData.description
+    const title = prefix + description
     
     // Create task in Planner
     await graphService.createTask({
@@ -250,7 +256,13 @@ async function handleEditEntry(entryData: {
     const formattedDate = `${day}/${month}/${year}`
     
     // Build title: BUCKET_NAME || [User name] dd/mm/yyyy What have done
-    const title = `${bucket.name} || [${me.displayName}] ${formattedDate} ${entryData.description}`
+    // Max 255 characters for Planner title
+    const prefix = `${bucket.name} || [${me.displayName}] ${formattedDate} `
+    const maxDescLength = 255 - prefix.length
+    const description = entryData.description.length > maxDescLength 
+      ? entryData.description.substring(0, maxDescLength - 3) + '...'
+      : entryData.description
+    const title = prefix + description
     
     // Update task in Planner
     await graphService.updateTask(
@@ -298,6 +310,43 @@ async function handleDeleteEntry(taskId: string, etag: string) {
 async function handleRefresh() {
   await loadEntries()
 }
+
+// Handle Git import - batch create entries from git commits
+async function handleGitImport(
+  entries: Array<{ projectId: string; bucketId: string; description: string; hours: number[]; date: Date }>
+) {
+  loading.value = true
+  error.value = null
+  
+  try {
+    let successCount = 0
+    let failCount = 0
+    
+    for (const entry of entries) {
+      try {
+        // Reuse the add entry logic
+        await handleAddEntry(entry)
+        successCount++
+      } catch (err) {
+        console.error('Failed to import entry:', entry, err)
+        failCount++
+      }
+    }
+    
+    if (failCount > 0) {
+      error.value = `Imported ${successCount} entries, ${failCount} failed`
+    }
+    
+    // Refresh to show new entries
+    await loadEntries()
+    
+  } catch (err) {
+    console.error('Git import failed:', err)
+    error.value = 'Failed to import entries from Git'
+  } finally {
+    loading.value = false
+  }
+}
 </script>
 
 <template>
@@ -336,6 +385,7 @@ async function handleRefresh() {
       @add-entry="handleAddEntry"
       @edit-entry="handleEditEntry"
       @delete-entry="handleDeleteEntry"
+      @git-import="handleGitImport"
       @refresh="handleRefresh"
       @logout="handleLogout"
     />
