@@ -27,6 +27,10 @@ const props = defineProps<{
   buckets: Array<{ id: string; name: string; planId: string }>
 }>()
 
+const emit = defineEmits<{
+  close: []
+}>()
+
 const accounts = ref<GitAccount[]>([])
 const repos = ref<GitRepo[]>([])
 const showAddAccount = ref(false)
@@ -260,8 +264,13 @@ const providerIcons: Record<string, string> = {
 </script>
 
 <template>
-  <div class="git-settings">
-    <h2>Git Integration</h2>
+  <div class="modal-overlay" @click.self="emit('close')">
+    <div class="modal-content git-settings">
+      <header class="modal-header">
+        <h2>Git Integration</h2>
+        <button class="btn-close" @click="emit('close')">&times;</button>
+      </header>
+      <div class="modal-body">
     
     <!-- Connected Accounts -->
     <section class="section">
@@ -423,24 +432,19 @@ const providerIcons: Record<string, string> = {
         </div>
       </div>
     </section>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.git-settings {
-  padding: 1.5rem;
-  max-width: 800px;
+.git-settings h2 {
+  margin: 0;
+  font-size: 1.25rem;
 }
 
-h2 {
-  margin: 0 0 1.5rem 0;
-  color: #2d3748;
-}
-
-h3 {
-  margin: 0 0 1rem 0;
-  font-size: 1rem;
-  color: #4a5568;
+.section:first-child {
+  margin-top: 0;
 }
 
 .section {
@@ -785,5 +789,74 @@ h3 {
 
 .checkbox input {
   cursor: pointer;
+}
+
+/* Modal Styles */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.modal-content {
+  background: white;
+  border-radius: 12px;
+  width: 100%;
+  max-width: 700px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.btn-close {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  cursor: pointer;
+  color: #718096;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-close:hover {
+  color: #2d3748;
+}
+
+.modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.5rem;
+}
+
+@media (max-width: 768px) {
+  .modal-content {
+    max-height: 100vh;
+    border-radius: 0;
+  }
 }
 </style>
