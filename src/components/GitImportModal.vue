@@ -2,6 +2,13 @@
 import { ref, computed, onMounted } from 'vue'
 import { format, parseISO, startOfDay, isSameDay } from 'date-fns'
 
+interface GitCommitStats {
+  filesChanged: number
+  additions: number
+  deletions: number
+  totalLines: number
+}
+
 interface GitCommit {
   sha: string
   message: string
@@ -10,6 +17,7 @@ interface GitCommit {
   repoFullName: string
   author: string
   url: string
+  stats?: GitCommitStats
 }
 
 interface DraftEntry {
@@ -20,7 +28,8 @@ interface DraftEntry {
   message: string
   hours: number
   selected: boolean
-  commits: GitCommit[]
+  commit: GitCommit
+  stats: GitCommitStats
 }
 
 const props = defineProps<{
@@ -52,74 +61,144 @@ const sinceDate = ref(format(new Date(), 'yyyy-MM-dd'))
 const commits = ref<GitCommit[]>([])
 const draftEntries = ref<DraftEntry[]>([])
 
-// Group commits by date and repo, calculate hours
-function processCommits(commitsList: GitCommit[]) {
-  const grouped = new Map<string, GitCommit[]>()
+// Process commits - create one draft entry per commit
+async function processCommits(commitsList: GitCommit[]) {
+  const entries: DraftEntry[] = []
   
-  // Group by date + repo
   for (const commit of commitsList) {
     const date = startOfDay(parseISO(commit.date))
-    const key = `${format(date, 'yyyy-MM-dd')}_${commit.repo}`
-    if (!grouped.has(key)) {
-      grouped.set(key, [])
-    }
-    grouped.get(key)!.push(commit)
-  }
-  
-  // Create draft entries
-  const entries: DraftEntry[] = []
-  for (const [key, repoCommits] of grouped) {
-    const [dateStr, repo] = key.split('_')
-    const date = parseISO(dateStr!)
-    const repoConfig = props.repos.find(r => r.name === repo)
+    const repoConfig = props.repos.find(r => r.name === commit.repo)
     
-    const hours = repoConfig?.autoCalculate 
-      ? calculateHours(repoCommits)
-      : repoConfig?.defaultHours || 2
+    // Fetch commit stats if auto-calculate is enabled
+    let stats: GitCommitStats | null = null
+    if (repoConfig?.autoCalculate && repoConfig?.token) {
+      if (repoConfig.provider === 'github') {
+        stats = await fetchGitHubCommitStats(commit.repoFullName, commit.sha, repoConfig.token)
+      } else if (repoConfig.provider === 'gitlab') {
+        stats = await fetchGitLabCommitStats(commit.repoFullName, commit.sha, repoConfig.token, repoConfig.gitlabUrl || 'https://gitlab.com')
+      }
+    }
+    
+    // Use fetched stats or default
+    const finalStats: GitCommitStats = stats || {
+      filesChanged: 0,
+      additions: 0,
+      deletions: 0,
+      totalLines: 0
+    }
+    
+    // Calculate hours
+    const hours = repoConfig?.autoCalculate && stats
+      ? calculateHoursFromStats(stats)
+      : (repoConfig?.defaultHours || 1)
     
     entries.push({
-      id: key,
+      id: `${commit.sha}_${format(date, 'yyyy-MM-dd')}`,
       date,
-      repo: repo!,
-      repoFullName: repoCommits[0]!.repoFullName,
-      message: repoCommits.map(c => c.message.split('\n')[0]).join(', '),
+      repo: commit.repo,
+      repoFullName: commit.repoFullName,
+      message: commit.message.split('\n')[0] || '', // First line only
       hours,
       selected: true,
-      commits: repoCommits
+      commit: commit,
+      stats: finalStats
     })
   }
   
   return entries.sort((a, b) => b.date.getTime() - a.date.getTime())
 }
 
-function calculateHours(commits: GitCommit[]): number {
-  if (commits.length === 0) return 0
-  if (commits.length === 1) return 2
+// Calculate working hours based on file changes and line changes
+function calculateHoursFromStats(stats: GitCommitStats): number {
+  const { filesChanged, totalLines } = stats
   
-  // Sort by time
-  const sorted = [...commits].sort((a, b) => 
-    new Date(a.date).getTime() - new Date(b.date).getTime()
-  )
+  // Base time for any commit (15 minutes)
+  let minutes = 15
   
-  let totalMinutes = 0
-  const MAX_MINUTES = 4 * 60 // Cap at 4 hours per gap
-  const MIN_MINUTES = 15     // Minimum 15 min per commit
+  // Add time based on files changed (5 min per file, capped at 30 min)
+  minutes += Math.min(filesChanged * 5, 30)
   
-  for (let i = 0; i < sorted.length - 1; i++) {
-    const current = new Date(sorted[i]!.date).getTime()
-    const next = new Date(sorted[i + 1]!.date).getTime()
-    const diffMinutes = (next - current) / (1000 * 60)
-    
-    // Cap at 4 hours, minimum 15 minutes
-    const minutes = Math.min(Math.max(diffMinutes, MIN_MINUTES), MAX_MINUTES)
-    totalMinutes += minutes
+  // Add time based on lines changed
+  // Small changes: 1 min per 5 lines
+  // Medium changes: 1 min per 10 lines  
+  // Large changes: 1 min per 20 lines
+  if (totalLines <= 50) {
+    minutes += totalLines * 0.2  // 1 min per 5 lines
+  } else if (totalLines <= 200) {
+    minutes += 50 * 0.2 + (totalLines - 50) * 0.1  // 1 min per 10 lines after 50
+  } else {
+    minutes += 50 * 0.2 + 150 * 0.1 + (totalLines - 200) * 0.05  // 1 min per 20 lines after 200
   }
   
-  // Add 30 min for last commit
-  totalMinutes += 30
-  
-  // Round to nearest 0.5 hour, cap at 8 hours
-  return Math.min(Math.round(totalMinutes / 30) * 0.5, 8)
+  // Cap at 4 hours per commit (realistic max for a single commit)
+  // Minimum 0.5 hours (30 minutes)
+  return Math.min(Math.max(Math.round(minutes / 30) * 0.5, 0.5), 4)
+}
+
+
+// Fetch detailed commit stats from GitHub
+async function fetchGitHubCommitStats(repoFullName: string, sha: string, token: string): Promise<GitCommitStats | null> {
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${repoFullName}/commits/${sha}`,
+      { headers: { Authorization: `token ${token}` } }
+    )
+    
+    if (!res.ok) return null
+    
+    const data = await res.json()
+    return {
+      filesChanged: data.files?.length || 0,
+      additions: data.stats?.additions || 0,
+      deletions: data.stats?.deletions || 0,
+      totalLines: (data.stats?.additions || 0) + (data.stats?.deletions || 0)
+    }
+  } catch (err) {
+    console.warn(`Failed to fetch commit stats for ${sha}:`, err)
+    return null
+  }
+}
+
+// Fetch detailed commit stats from GitLab
+async function fetchGitLabCommitStats(repoFullName: string, sha: string, token: string, gitlabUrl: string): Promise<GitCommitStats | null> {
+  try {
+    const baseUrl = gitlabUrl || 'https://gitlab.com'
+    const projectPath = encodeURIComponent(repoFullName)
+    
+    const res = await fetch(
+      `${baseUrl}/api/v4/projects/${projectPath}/repository/commits/${sha}/diff`,
+      { headers: { 'PRIVATE-TOKEN': token } }
+    )
+    
+    if (!res.ok) return null
+    
+    const diffs = await res.json()
+    let filesChanged = 0
+    let additions = 0
+    let deletions = 0
+    
+    if (Array.isArray(diffs)) {
+      filesChanged = diffs.length
+      for (const diff of diffs) {
+        // Count lines from diff string
+        const diffLines = diff.diff?.split('\n') || []
+        for (const line of diffLines) {
+          if (line.startsWith('+') && !line.startsWith('+++')) additions++
+          if (line.startsWith('-') && !line.startsWith('---')) deletions++
+        }
+      }
+    }
+    
+    return {
+      filesChanged,
+      additions,
+      deletions,
+      totalLines: additions + deletions
+    }
+  } catch (err) {
+    console.warn(`Failed to fetch commit stats for ${sha}:`, err)
+    return null
+  }
 }
 
 async function fetchCommits() {
@@ -237,7 +316,7 @@ async function fetchCommits() {
     }
     
     commits.value = allCommits
-    draftEntries.value = processCommits(allCommits)
+    draftEntries.value = await processCommits(allCommits)
     
     console.log('[DEBUG] Total commits fetched:', allCommits.length)
     
@@ -310,10 +389,14 @@ function handleImport() {
     const projectId = repo?.mappedPlanId || ''
     const bucketId = repo?.mappedBucketId || ''
     
+    // Build description with commit info
+    const shortSha = entry.commit.sha.slice(0, 7)
+    const description = `[${shortSha}] ${entry.message}`
+    
     return {
       projectId,
       bucketId,
-      description: entry.message,
+      description,
       hours: hoursToArray(entry.hours),
       date: entry.date
     }
@@ -431,8 +514,24 @@ onMounted(() => {
                   <div class="entry-message" :title="entry.message">
                     {{ entry.message.length > 60 ? entry.message.slice(0, 60) + '...' : entry.message }}
                   </div>
-                  <div class="entry-commits">
-                    {{ entry.commits.length }} commit{{ entry.commits.length > 1 ? 's' : '' }}
+                  <div class="entry-stats">
+                    <span v-if="entry.stats.filesChanged > 0" class="stat-files" title="Files changed">
+                      {{ entry.stats.filesChanged }} file{{ entry.stats.filesChanged > 1 ? 's' : '' }}
+                    </span>
+                    <span v-if="entry.stats.totalLines > 0" class="stat-lines" title="Lines changed">
+                      {{ entry.stats.additions > 0 ? `+${entry.stats.additions}` : '' }}{{ entry.stats.deletions > 0 ? ` -${entry.stats.deletions}` : '' }}
+                    </span>
+                    <span v-if="entry.stats.filesChanged === 0" class="stat-unknown">no stats</span>
+                    <a 
+                      :href="entry.commit.url" 
+                      target="_blank" 
+                      rel="noopener" 
+                      class="commit-link"
+                      @click.stop
+                      title="View commit"
+                    >
+                      {{ entry.commit.sha.slice(0, 7) }}
+                    </a>
                   </div>
                 </div>
                 
@@ -442,7 +541,7 @@ onMounted(() => {
                     @click="adjustHours(entry, -0.5)"
                     :disabled="entry.hours <= 0.5"
                   >-</button>
-                  <span class="hours-value" :class="{ 'auto-calc': entry.commits.length > 1 }">
+                  <span class="hours-value" :class="{ 'auto-calc': entry.stats.filesChanged > 0 }">
                     {{ entry.hours }}h
                   </span>
                   <button 
@@ -702,6 +801,52 @@ onMounted(() => {
   font-size: 0.75rem;
   color: #718096;
   margin-top: 0.25rem;
+}
+
+.entry-stats {
+  font-size: 0.75rem;
+  color: #718096;
+  margin-top: 0.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.stat-files {
+  color: #4299e1;
+  font-weight: 500;
+}
+
+.stat-lines {
+  color: #48bb78;
+  font-weight: 500;
+}
+
+.stat-lines::before {
+  content: '•';
+  margin-right: 0.25rem;
+  color: #cbd5e0;
+}
+
+.stat-unknown {
+  color: #a0aec0;
+  font-style: italic;
+}
+
+.commit-link {
+  color: #667eea;
+  text-decoration: none;
+  font-family: monospace;
+  font-size: 0.7rem;
+  background: #edf2f7;
+  padding: 0.125rem 0.375rem;
+  border-radius: 4px;
+  margin-left: auto;
+}
+
+.commit-link:hover {
+  background: #e2e8f0;
+  color: #5a67d8;
 }
 
 .entry-hours-control {
