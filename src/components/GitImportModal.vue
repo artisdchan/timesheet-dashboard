@@ -389,14 +389,10 @@ function handleImport() {
     const projectId = repo?.mappedPlanId || ''
     const bucketId = repo?.mappedBucketId || ''
     
-    // Build description with commit info
-    const shortSha = entry.commit.sha.slice(0, 7)
-    const description = `[${shortSha}] ${entry.message}`
-    
     return {
       projectId,
       bucketId,
-      description,
+      description: entry.message,
       hours: hoursToArray(entry.hours),
       date: entry.date
     }
