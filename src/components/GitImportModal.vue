@@ -224,7 +224,8 @@ async function fetchCommits() {
       console.log('[DEBUG] Fetching from repo:', repo.name, 'author filter:', repo.commitAuthor)
       
       if (repo.provider === 'github') {
-        const since = new Date(sinceDate.value).toISOString()
+        // Fix: Get start of day in local timezone, then convert to UTC for API
+        const since = startOfDay(parseISO(sinceDate.value)).toISOString()
         // Fetch all commits, filter by author client-side
         const res = await fetch(
           `https://api.github.com/repos/${repo.fullName}/commits?since=${since}&per_page=100`,
@@ -265,7 +266,8 @@ async function fetchCommits() {
           url: c.html_url
         })))
       } else if (repo.provider === 'gitlab') {
-        const since = new Date(sinceDate.value).toISOString()
+        // Fix: Get start of day in local timezone, then convert to UTC for API
+        const since = startOfDay(parseISO(sinceDate.value)).toISOString()
         const baseUrl = repo.gitlabUrl || 'https://gitlab.com'
         
         // Fetch all commits from all branches, filter by author client-side
