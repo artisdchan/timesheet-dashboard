@@ -82,7 +82,7 @@ function resetForm() {
 function openAddForm() {
   resetForm()
   showAddForm.value = true
-  
+
   // Try to use stored passphrase
   const stored = encryptionService.getStoredPassphrase()
   if (stored) {
@@ -97,17 +97,17 @@ function closeForm() {
 
 async function fetchRepositories() {
   if (!formAccountId.value) return
-  
+
   const passphrase = formPassphrase.value || encryptionService.getStoredPassphrase()
   if (!passphrase) {
     passphraseError.value = true
     return
   }
-  
+
   passphraseError.value = false
   loadingRepos.value = true
   availableRepos.value = []
-  
+
   try {
     const repos = await gitService.listGitRepositories(
       props.microsoftUserId,
@@ -115,7 +115,7 @@ async function fetchRepositories() {
       passphrase
     )
     availableRepos.value = repos
-    
+
     // Store passphrase if it worked
     if (formPassphrase.value) {
       encryptionService.storePassphrase(formPassphrase.value)
@@ -123,7 +123,7 @@ async function fetchRepositories() {
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to fetch repositories'
     emit('error', message)
-    
+
     // Clear passphrase if it failed (likely wrong)
     if (formPassphrase.value) {
       passphraseError.value = true
@@ -136,10 +136,10 @@ async function fetchRepositories() {
 async function fetchBranchesForRepo(repoFullName: string) {
   const passphrase = formPassphrase.value || encryptionService.getStoredPassphrase()
   if (!passphrase) return
-  
+
   // Set loading state
   repoBranches.value.set(repoFullName, { branches: [], loading: true })
-  
+
   try {
     const branches = await gitService.listGitBranches(
       props.microsoftUserId,
@@ -147,9 +147,9 @@ async function fetchBranchesForRepo(repoFullName: string) {
       repoFullName,
       passphrase
     )
-    
+
     repoBranches.value.set(repoFullName, { branches, loading: false })
-    
+
     // Set default branch if not already set
     if (!selectedRepoBranches.value[repoFullName]) {
       const selectedRepo = availableRepos.value.find(r => r.full_name === repoFullName)
@@ -171,18 +171,18 @@ async function handleSubmit() {
     emit('error', 'Please fill in all required fields')
     return
   }
-  
+
   loading.value = true
-  
+
   try {
     // Create mappings for all selected repositories
     for (const repoFullName of formSelectedRepos.value) {
       const selectedRepo = availableRepos.value.find(r => r.full_name === repoFullName)
       if (!selectedRepo) continue
-      
+
       // Get the branch for this repo (or use default)
       const branch = selectedRepoBranches.value[repoFullName] || selectedRepo.default_branch
-      
+
       await gitService.createRepoMapping(props.microsoftUserId, {
         git_account_id: formAccountId.value,
         repo_full_name: selectedRepo.full_name,
@@ -194,7 +194,7 @@ async function handleSubmit() {
         commit_pattern: formCommitPattern.value || undefined,
       })
     }
-    
+
     await loadMappings()
     closeForm()
   } catch (err) {
@@ -208,11 +208,11 @@ async function handleSubmit() {
 async function handleDelete(mapping: GitRepoMapping) {
   const account = props.accounts.find(a => a.id === mapping.git_account_id)
   const displayName = account?.display_name || 'this account'
-  
+
   if (!confirm(`Delete mapping for "${mapping.repo_full_name}" from ${displayName}?`)) {
     return
   }
-  
+
   loading.value = true
   try {
     await gitService.deleteRepoMapping(props.microsoftUserId, mapping.id)
@@ -228,7 +228,7 @@ async function handleDelete(mapping: GitRepoMapping) {
 function getAccountDisplayName(accountId: string): string {
   const account = props.accounts.find(a => a.id === accountId)
   if (!account) return 'Unknown'
-  
+
   const providerName = GIT_PROVIDERS[account.provider]?.displayName || account.provider
   return `${account.display_name} (${providerName})`
 }
@@ -243,10 +243,6 @@ function getBucketName(bucketId: string): string {
   return bucket?.name || 'Unknown'
 }
 
-function getSelectedRepo(repoFullName: string) {
-  return availableRepos.value.find(r => r.full_name === repoFullName)
-}
-
 // Watch for account changes to reset repo selection
 watch(formAccountId, () => {
   formSelectedRepos.value = []
@@ -259,12 +255,12 @@ watch(formAccountId, () => {
 watch(formSelectedRepos, (newRepos, oldRepos) => {
   // Get newly selected repos
   const newSelected = newRepos.filter(r => !oldRepos?.includes(r))
-  
+
   // Fetch branches for newly selected repos
   for (const repo of newSelected) {
     fetchBranchesForRepo(repo)
   }
-  
+
   // Clean up deselected repos from branches map
   const deselected = oldRepos?.filter(r => !newRepos.includes(r)) || []
   for (const repo of deselected) {
@@ -284,9 +280,9 @@ watch(formPlanId, () => {
     <!-- Header -->
     <div class="manager-header">
       <h3>Repository Mappings</h3>
-      <button 
-        class="btn-add" 
-        @click="openAddForm" 
+      <button
+        class="btn-add"
+        @click="openAddForm"
         :disabled="loading || accounts.length === 0"
       >
         + Map Repository
@@ -396,9 +392,9 @@ watch(formPlanId, () => {
           <div v-if="availableRepos.length > 0" class="form-group">
             <label>Repositories ({{ formSelectedRepos.length }} selected) *</label>
             <div class="repos-checklist">
-              <label 
-                v-for="repo in availableRepos" 
-                :key="repo.id" 
+              <label
+                v-for="repo in availableRepos"
+                :key="repo.id"
                 class="repo-checkbox"
                 :class="{ selected: formSelectedRepos.includes(repo.full_name) }"
               >
@@ -421,10 +417,10 @@ watch(formPlanId, () => {
             <p class="help-text" style="margin-bottom: 0.75rem;">
               Select which branch to import commits from for each repository.
             </p>
-            
+
             <div class="repo-branch-list">
-              <div 
-                v-for="repoFullName in formSelectedRepos" 
+              <div
+                v-for="repoFullName in formSelectedRepos"
                 :key="repoFullName"
                 class="repo-branch-item"
               >
@@ -436,16 +432,16 @@ watch(formPlanId, () => {
                   <span class="repo-full-name">{{ repoFullName }}</span>
                 </div>
                 <div class="repo-branch-select">
-                  <select 
-                    v-if="repoBranches.has(repoFullName) && repoBranches.get(repoFullName)!.branches.length > 0" 
-                    v-model="selectedRepoBranches[repoFullName]" 
+                  <select
+                    v-if="repoBranches.has(repoFullName) && repoBranches.get(repoFullName)!.branches.length > 0"
+                    v-model="selectedRepoBranches[repoFullName]"
                     class="form-select"
                     required
                   >
                     <option value="">Select a branch...</option>
-                    <option 
-                      v-for="branch in repoBranches.get(repoFullName)!.branches" 
-                      :key="branch" 
+                    <option
+                      v-for="branch in repoBranches.get(repoFullName)!.branches"
+                      :key="branch"
                       :value="branch"
                     >
                       {{ branch }}
@@ -520,10 +516,10 @@ watch(formPlanId, () => {
 
         <footer class="form-footer">
           <button type="button" class="btn-secondary" @click="closeForm">Cancel</button>
-          <button 
-            type="button" 
-            class="btn-primary" 
-            @click="handleSubmit" 
+          <button
+            type="button"
+            class="btn-primary"
+            @click="handleSubmit"
             :disabled="loading || formSelectedRepos.length === 0 || !formPlanId || !formBucketId"
           >
             {{ loading ? 'Saving...' : `Create ${formSelectedRepos.length || ''} Mapping${formSelectedRepos.length === 1 ? '' : 's'}` }}
@@ -1013,13 +1009,13 @@ watch(formPlanId, () => {
     max-height: 100vh;
     border-radius: 0;
   }
-  
+
   .mapping-details {
     flex-direction: column;
     align-items: flex-start;
     gap: 0.25rem;
   }
-  
+
   .mapping-details .arrow {
     display: none;
   }
