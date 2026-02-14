@@ -30,12 +30,13 @@ const formAccountId = ref('')
 const formSelectedRepos = ref<string[]>([])
 const formPlanId = ref('')
 const formBucketId = ref('')
-const formBranch = ref('')              // Selected branch for commits
 const formImportSince = ref('')
 const formCommitPattern = ref('')
 const formPassphrase = ref('')
-const availableBranches = ref<string[]>([])  // List of branches from selected repo
-const loadingBranches = ref(false)
+
+// Per-repository branch selection
+const repoBranches = ref<Map<string, { branches: string[]; loading: boolean }>>(new Map())
+const selectedRepoBranches = ref<Record<string, string>>({})
 
 // Computed
 const availableBuckets = computed(() => {
@@ -68,15 +69,14 @@ function resetForm() {
   formSelectedRepos.value = []
   formPlanId.value = ''
   formBucketId.value = ''
-  formBranch.value = ''
   formImportSince.value = ''
   formCommitPattern.value = ''
   formPassphrase.value = ''
   passphraseError.value = false
   editingMapping.value = null
   availableRepos.value = []
-  availableBranches.value = []
-  loadingBranches.value = false
+  repoBranches.value = new Map()
+  selectedRepoBranches.value = {}
 }
 
 function openAddForm() {
@@ -133,17 +133,12 @@ async function fetchRepositories() {
   }
 }
 
-async function fetchBranches() {
-  if (formSelectedRepos.value.length !== 1) return
-  
-  const repoFullName = formSelectedRepos.value[0]
-  if (!repoFullName) return
-  
+async function fetchBranchesForRepo(repoFullName: string) {
   const passphrase = formPassphrase.value || encryptionService.getStoredPassphrase()
   if (!passphrase) return
   
-  loadingBranches.value = true
-  availableBranches.value = []
+  // Set loading state
+  repoBranches.value.set(repoFullName, { branches: [], loading: true })
   
   try {
     const branches = await gitService.listGitBranches(
@@ -152,21 +147,22 @@ async function fetchBranches() {
       repoFullName,
       passphrase
     )
-    availableBranches.value = branches
     
-    // Set default branch if available
-    const selectedRepo = availableRepos.value.find(r => r.full_name === repoFullName)
-    if (selectedRepo && branches.includes(selectedRepo.default_branch)) {
-      formBranch.value = selectedRepo.default_branch
-    } else if (branches.length > 0) {
-      formBranch.value = branches[0] ?? ''
+    repoBranches.value.set(repoFullName, { branches, loading: false })
+    
+    // Set default branch if not already set
+    if (!selectedRepoBranches.value[repoFullName]) {
+      const selectedRepo = availableRepos.value.find(r => r.full_name === repoFullName)
+      if (selectedRepo && branches.includes(selectedRepo.default_branch)) {
+        selectedRepoBranches.value[repoFullName] = selectedRepo.default_branch
+      } else if (branches.length > 0) {
+        selectedRepoBranches.value[repoFullName] = branches[0] ?? ''
+      }
     }
   } catch (err) {
-    console.error('Failed to fetch branches:', err)
+    console.error(`Failed to fetch branches for ${repoFullName}:`, err)
     // Non-fatal error, user can still type branch manually
-    availableBranches.value = []
-  } finally {
-    loadingBranches.value = false
+    repoBranches.value.set(repoFullName, { branches: [], loading: false })
   }
 }
 
@@ -184,11 +180,14 @@ async function handleSubmit() {
       const selectedRepo = availableRepos.value.find(r => r.full_name === repoFullName)
       if (!selectedRepo) continue
       
+      // Get the branch for this repo (or use default)
+      const branch = selectedRepoBranches.value[repoFullName] || selectedRepo.default_branch
+      
       await gitService.createRepoMapping(props.microsoftUserId, {
         git_account_id: formAccountId.value,
         repo_full_name: selectedRepo.full_name,
         repo_url: selectedRepo.url,
-        default_branch: formBranch.value || selectedRepo.default_branch,
+        default_branch: branch,
         plan_id: formPlanId.value,
         bucket_id: formBucketId.value,
         import_since: formImportSince.value || undefined,
@@ -244,22 +243,33 @@ function getBucketName(bucketId: string): string {
   return bucket?.name || 'Unknown'
 }
 
+function getSelectedRepo(repoFullName: string) {
+  return availableRepos.value.find(r => r.full_name === repoFullName)
+}
+
 // Watch for account changes to reset repo selection
 watch(formAccountId, () => {
   formSelectedRepos.value = []
   availableRepos.value = []
-  availableBranches.value = []
-  formBranch.value = ''
+  repoBranches.value.clear()
+  selectedRepoBranches.value = {}
 })
 
-// Watch for repo selection changes to fetch branches
-watch(formSelectedRepos, () => {
-  formBranch.value = ''
-  availableBranches.value = []
+// Watch for repo selection changes to fetch branches for newly selected repos
+watch(formSelectedRepos, (newRepos, oldRepos) => {
+  // Get newly selected repos
+  const newSelected = newRepos.filter(r => !oldRepos?.includes(r))
   
-  // Fetch branches if exactly one repo is selected
-  if (formSelectedRepos.value.length === 1) {
-    fetchBranches()
+  // Fetch branches for newly selected repos
+  for (const repo of newSelected) {
+    fetchBranchesForRepo(repo)
+  }
+  
+  // Clean up deselected repos from branches map
+  const deselected = oldRepos?.filter(r => !newRepos.includes(r)) || []
+  for (const repo of deselected) {
+    repoBranches.value.delete(repo)
+    delete selectedRepoBranches.value[repo]
   }
 })
 
@@ -405,42 +415,57 @@ watch(formPlanId, () => {
             </p>
           </div>
 
-          <!-- Branch Selection -->
+          <!-- Per-Repository Branch Selection -->
           <div v-if="formSelectedRepos.length > 0" class="form-group">
-            <label>Branch for Import *</label>
-            <div class="branch-input-group">
-              <select 
-                v-if="availableBranches.length > 0" 
-                v-model="formBranch" 
-                class="form-select"
-              >
-                <option value="">Select a branch...</option>
-                <option v-for="branch in availableBranches" :key="branch" :value="branch">
-                  {{ branch }}
-                </option>
-              </select>
-              <input
-                v-else
-                v-model="formBranch"
-                type="text"
-                placeholder="Enter branch name (e.g., main, develop)"
-                class="form-input"
-              />
-              <button
-                v-if="formSelectedRepos.length === 1 && !loadingBranches"
-                type="button"
-                class="btn-fetch-branches"
-                @click="fetchBranches"
-                title="Refresh branches"
-              >
-                ↻
-              </button>
-              <span v-if="loadingBranches" class="spinner-small"></span>
-            </div>
-            <p class="help-text">
-              Commits will be fetched from this branch. 
-              <span v-if="formSelectedRepos.length > 1">When multiple repos are selected, the default branch of each repo will be used.</span>
+            <label>Branch for Each Repository *</label>
+            <p class="help-text" style="margin-bottom: 0.75rem;">
+              Select which branch to import commits from for each repository.
             </p>
+            
+            <div class="repo-branch-list">
+              <div 
+                v-for="repoFullName in formSelectedRepos" 
+                :key="repoFullName"
+                class="repo-branch-item"
+              >
+                <div class="repo-name">
+                  <span class="repo-icon">
+                    <template v-if="accounts.find(a => a.id === formAccountId)?.provider?.includes('gitlab')">🦊</template>
+                    <template v-else>🐙</template>
+                  </span>
+                  <span class="repo-full-name">{{ repoFullName }}</span>
+                </div>
+                <div class="repo-branch-select">
+                  <select 
+                    v-if="repoBranches.has(repoFullName) && repoBranches.get(repoFullName)!.branches.length > 0" 
+                    v-model="selectedRepoBranches[repoFullName]" 
+                    class="form-select"
+                    required
+                  >
+                    <option value="">Select a branch...</option>
+                    <option 
+                      v-for="branch in repoBranches.get(repoFullName)!.branches" 
+                      :key="branch" 
+                      :value="branch"
+                    >
+                      {{ branch }}
+                    </option>
+                  </select>
+                  <input
+                    v-else-if="repoBranches.has(repoFullName) && !repoBranches.get(repoFullName)!.loading"
+                    v-model="selectedRepoBranches[repoFullName]"
+                    type="text"
+                    placeholder="Enter branch name (e.g., main)"
+                    class="form-input"
+                    required
+                  />
+                  <div v-else class="loading-branch">
+                    <span class="spinner-small"></span>
+                    <span class="loading-text">Loading branches...</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
           <!-- Plan Selection -->
@@ -918,6 +943,69 @@ watch(formPlanId, () => {
 
 .btn-fetch-branches:hover {
   background: #5a67d8;
+}
+
+/* Per-Repository Branch Selection */
+.repo-branch-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.repo-branch-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: #f7fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+
+.repo-branch-item .repo-name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #2d3748;
+}
+
+.repo-branch-item .repo-icon {
+  font-size: 1rem;
+}
+
+.repo-branch-item .repo-full-name {
+  word-break: break-all;
+}
+
+.repo-branch-item .repo-branch-select {
+  display: flex;
+  align-items: center;
+}
+
+.repo-branch-item .repo-branch-select .form-select,
+.repo-branch-item .repo-branch-select .form-input {
+  font-size: 0.875rem;
+}
+
+.loading-branch {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem;
+  color: #718096;
+  font-size: 0.875rem;
+}
+
+.loading-branch .spinner-small {
+  border-color: rgba(102, 126, 234, 0.2);
+  border-top-color: #667eea;
+  margin-right: 0;
+}
+
+.loading-branch .loading-text {
+  color: #718096;
 }
 
 @media (max-width: 600px) {
