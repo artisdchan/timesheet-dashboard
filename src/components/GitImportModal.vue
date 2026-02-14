@@ -1,23 +1,16 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { format, parseISO, startOfDay, isSameDay } from 'date-fns'
+import { gitService } from '../services/gitService'
+import { encryptionService } from '../services/encryption'
+import type { GitAccount, GitRepoMapping, GitCommit } from '../types/git'
+import PassphrasePrompt from './PassphrasePrompt.vue'
 
 interface GitCommitStats {
   filesChanged: number
   additions: number
   deletions: number
   totalLines: number
-}
-
-interface GitCommit {
-  sha: string
-  message: string
-  date: string
-  repo: string
-  repoFullName: string
-  author: string
-  url: string
-  stats?: GitCommitStats
 }
 
 interface DraftEntry {
@@ -33,19 +26,9 @@ interface DraftEntry {
 }
 
 const props = defineProps<{
-  repos: Array<{
-    id: string
-    name: string
-    fullName: string
-    provider: string
-    token: string
-    gitlabUrl?: string
-    commitAuthor?: string // To filter commits
-    mappedPlanId?: string
-    mappedBucketId?: string
-    autoCalculate: boolean
-    defaultHours: number
-  }>
+  microsoftUserId: string
+  accounts: GitAccount[]
+  mappings: GitRepoMapping[]
   plans: Array<{ id: string; title: string }>
   buckets: Array<{ id: string; name: string; planId: string }>
 }>()
@@ -55,28 +38,31 @@ const emit = defineEmits<{
   close: []
 }>()
 
+// State
 const loading = ref(false)
 const error = ref('')
 const sinceDate = ref(format(new Date(), 'yyyy-MM-dd'))
 const commits = ref<GitCommit[]>([])
 const draftEntries = ref<DraftEntry[]>([])
+const showPassphrasePrompt = ref(false)
 
 // Process commits - create one draft entry per commit
-async function processCommits(commitsList: GitCommit[]) {
+async function processCommits(commitsList: GitCommit[], mapping: GitRepoMapping) {
   const entries: DraftEntry[] = []
+  const account = props.accounts.find(a => a.id === mapping.git_account_id)
   
   for (const commit of commitsList) {
-    const date = startOfDay(parseISO(commit.date))
-    const repoConfig = props.repos.find(r => r.name === commit.repo)
+    const date = startOfDay(commit.committer_date || commit.author_date)
     
     // Fetch commit stats if auto-calculate is enabled
     let stats: GitCommitStats | null = null
-    if (repoConfig?.autoCalculate && repoConfig?.token) {
-      if (repoConfig.provider === 'github') {
-        stats = await fetchGitHubCommitStats(commit.repoFullName, commit.sha, repoConfig.token)
-      } else if (repoConfig.provider === 'gitlab') {
-        stats = await fetchGitLabCommitStats(commit.repoFullName, commit.sha, repoConfig.token, repoConfig.gitlabUrl || 'https://gitlab.com')
-      }
+    // TODO: Add auto-calculate option to mapping
+    const autoCalculate = false
+    
+    if (autoCalculate && account) {
+      // This would need a method to fetch individual commit stats
+      // For now, we'll skip detailed stats
+      stats = null
     }
     
     // Use fetched stats or default
@@ -87,17 +73,15 @@ async function processCommits(commitsList: GitCommit[]) {
       totalLines: 0
     }
     
-    // Calculate hours
-    const hours = repoConfig?.autoCalculate && stats
-      ? calculateHoursFromStats(stats)
-      : (repoConfig?.defaultHours || 1)
+    // Default hours (could be configurable per mapping)
+    const hours = 1
     
     entries.push({
       id: `${commit.sha}_${format(date, 'yyyy-MM-dd')}`,
       date,
-      repo: commit.repo,
-      repoFullName: commit.repoFullName,
-      message: commit.message.split('\n')[0] || '', // First line only
+      repo: mapping.repo_full_name,
+      repoFullName: mapping.repo_full_name,
+      message: commit.message.split('\n')[0] || '',
       hours,
       selected: true,
       commit: commit,
@@ -108,230 +92,62 @@ async function processCommits(commitsList: GitCommit[]) {
   return entries.sort((a, b) => b.date.getTime() - a.date.getTime())
 }
 
-// Calculate working hours based on file changes and line changes
-function calculateHoursFromStats(stats: GitCommitStats): number {
-  const { filesChanged, totalLines } = stats
+async function fetchCommitsWithPassphrase(passphrase?: string) {
+  const effectivePassphrase = passphrase || encryptionService.getStoredPassphrase()
   
-  // Base time for any commit (15 minutes)
-  let minutes = 15
-  
-  // Add time based on files changed (5 min per file, capped at 30 min)
-  minutes += Math.min(filesChanged * 5, 30)
-  
-  // Add time based on lines changed
-  // Small changes: 1 min per 5 lines
-  // Medium changes: 1 min per 10 lines  
-  // Large changes: 1 min per 20 lines
-  if (totalLines <= 50) {
-    minutes += totalLines * 0.2  // 1 min per 5 lines
-  } else if (totalLines <= 200) {
-    minutes += 50 * 0.2 + (totalLines - 50) * 0.1  // 1 min per 10 lines after 50
-  } else {
-    minutes += 50 * 0.2 + 150 * 0.1 + (totalLines - 200) * 0.05  // 1 min per 20 lines after 200
+  if (!effectivePassphrase) {
+    showPassphrasePrompt.value = true
+    return
   }
   
-  // Cap at 4 hours per commit (realistic max for a single commit)
-  // Minimum 0.5 hours (30 minutes)
-  return Math.min(Math.max(Math.round(minutes / 30) * 0.5, 0.5), 4)
-}
-
-
-// Fetch detailed commit stats from GitHub
-async function fetchGitHubCommitStats(repoFullName: string, sha: string, token: string): Promise<GitCommitStats | null> {
-  try {
-    const res = await fetch(
-      `https://api.github.com/repos/${repoFullName}/commits/${sha}`,
-      { headers: { Authorization: `token ${token}` } }
-    )
-    
-    if (!res.ok) return null
-    
-    const data = await res.json()
-    return {
-      filesChanged: data.files?.length || 0,
-      additions: data.stats?.additions || 0,
-      deletions: data.stats?.deletions || 0,
-      totalLines: (data.stats?.additions || 0) + (data.stats?.deletions || 0)
-    }
-  } catch (err) {
-    console.warn(`Failed to fetch commit stats for ${sha}:`, err)
-    return null
-  }
-}
-
-// Fetch detailed commit stats from GitLab
-async function fetchGitLabCommitStats(repoFullName: string, sha: string, token: string, gitlabUrl: string): Promise<GitCommitStats | null> {
-  try {
-    const baseUrl = gitlabUrl || 'https://gitlab.com'
-    const projectPath = encodeURIComponent(repoFullName)
-    
-    const res = await fetch(
-      `${baseUrl}/api/v4/projects/${projectPath}/repository/commits/${sha}/diff`,
-      { headers: { 'PRIVATE-TOKEN': token } }
-    )
-    
-    if (!res.ok) return null
-    
-    const diffs = await res.json()
-    let filesChanged = 0
-    let additions = 0
-    let deletions = 0
-    
-    if (Array.isArray(diffs)) {
-      filesChanged = diffs.length
-      for (const diff of diffs) {
-        // Count lines from diff string
-        const diffLines = diff.diff?.split('\n') || []
-        for (const line of diffLines) {
-          if (line.startsWith('+') && !line.startsWith('+++')) additions++
-          if (line.startsWith('-') && !line.startsWith('---')) deletions++
-        }
-      }
-    }
-    
-    return {
-      filesChanged,
-      additions,
-      deletions,
-      totalLines: additions + deletions
-    }
-  } catch (err) {
-    console.warn(`Failed to fetch commit stats for ${sha}:`, err)
-    return null
-  }
-}
-
-async function fetchCommits() {
   loading.value = true
   error.value = ''
   commits.value = []
+  draftEntries.value = []
   
-  console.log('[DEBUG] Fetching commits for repos:', props.repos.length)
-  
-  // Only fetch from mapped repos (have mappedPlanId)
-  const mappedRepos = props.repos.filter(r => r.mappedPlanId && r.token)
-  console.log('[DEBUG] Mapped repos with tokens:', mappedRepos.length)
-  console.log('[DEBUG] Repos:', mappedRepos.map(r => ({ 
-    name: r.name, 
-    mappedPlanId: r.mappedPlanId,
-    commitAuthor: r.commitAuthor 
-  })))
+  console.log('[DEBUG] Fetching commits for user:', props.microsoftUserId)
   
   try {
-    const allCommits: GitCommit[] = []
+    const since = sinceDate.value ? startOfDay(parseISO(sinceDate.value)) : undefined
     
-    for (const repo of mappedRepos) {
-      console.log('[DEBUG] Fetching from repo:', repo.name, 'author filter:', repo.commitAuthor)
-      
-      if (repo.provider === 'github') {
-        // Fix: Get start of day in local timezone, then convert to UTC for API
-        const since = startOfDay(parseISO(sinceDate.value)).toISOString()
-        // Fetch all commits, filter by author client-side
-        const res = await fetch(
-          `https://api.github.com/repos/${repo.fullName}/commits?since=${since}&per_page=100`,
-          { headers: { Authorization: `token ${repo.token}` } }
-        )
-        
-        if (!res.ok) {
-          console.warn(`Failed to fetch ${repo.fullName}:`, res.statusText)
-          continue
-        }
-        
-        const data = await res.json()
-        console.log(`[DEBUG] GitHub ${repo.name}: fetched ${data.length} commits`)
-        if (data.length > 0) {
-          console.log(`[DEBUG] Sample commit authors:`, data.slice(0, 3).map((c: any) => c.commit?.author?.name))
-          console.log(`[DEBUG] Filtering for author: "${repo.commitAuthor}"`)
-        }
-        
-        // Filter by commit author name client-side
-        const filtered = data.filter((c: any) => {
-          const authorName = c.commit?.author?.name || ''
-          const shouldInclude = !repo.commitAuthor || 
-            authorName.toLowerCase().includes(repo.commitAuthor.toLowerCase())
-          if (!shouldInclude) {
-            console.log(`[DEBUG] Filtering out: author="${authorName}" !== "${repo.commitAuthor}"`)
-          }
-          return shouldInclude
-        })
-        console.log(`[DEBUG] After filtering: ${filtered.length} commits`)
-        
-        allCommits.push(...filtered.map((c: any) => ({
-          sha: c.sha,
-          message: c.commit.message,
-          date: c.commit.author.date,
-          repo: repo.name,
-          repoFullName: repo.fullName,
-          author: c.commit.author.name,
-          url: c.html_url
-        })))
-      } else if (repo.provider === 'gitlab') {
-        // Fix: Get start of day in local timezone, then convert to UTC for API
-        const since = startOfDay(parseISO(sinceDate.value)).toISOString()
-        const baseUrl = repo.gitlabUrl || 'https://gitlab.com'
-        
-        // Fetch all commits from all branches, filter by author client-side
-        const projectPath = encodeURIComponent(repo.fullName)
-        const url = `${baseUrl}/api/v4/projects/${projectPath}/repository/commits?since=${since}&per_page=100&all=true`
-        console.log(`[DEBUG] Fetching from URL:`, url)
-        
-        const res = await fetch(url, { headers: { 'PRIVATE-TOKEN': repo.token } })
-        
-        console.log(`[DEBUG] Response status:`, res.status, res.statusText)
-        
-        if (!res.ok) {
-          const errorText = await res.text()
-          console.error(`[DEBUG] Failed to fetch ${repo.fullName}:`, res.status, errorText)
-          continue
-        }
-        
-        const data = await res.json()
-        console.log(`[DEBUG] GitLab ${repo.name}: response type:`, Array.isArray(data) ? 'array' : typeof data)
-        console.log(`[DEBUG] GitLab ${repo.name}: fetched ${data.length || 0} commits`)
-        if (data.length > 0) {
-          console.log(`[DEBUG] Sample commit authors:`, data.slice(0, 3).map((c: any) => c.author_name))
-          console.log(`[DEBUG] Filtering for author: "${repo.commitAuthor}"`)
-        }
-        
-        // Filter by commit author name client-side
-        const filtered = data.filter((c: any) => {
-          const authorName = c.author_name || ''
-          const shouldInclude = !repo.commitAuthor || 
-            authorName.toLowerCase().includes(repo.commitAuthor.toLowerCase())
-          if (!shouldInclude) {
-            console.log(`[DEBUG] Filtering out: author="${authorName}" !== "${repo.commitAuthor}"`)
-          }
-          return shouldInclude
-        })
-        console.log(`[DEBUG] After filtering: ${filtered.length} commits`)
-        
-        allCommits.push(...filtered.map((c: any) => ({
-          sha: c.id,
-          message: c.message,
-          date: c.committed_date,
-          repo: repo.name,
-          repoFullName: repo.fullName,
-          author: c.author_name,
-          url: c.web_url
-        })))
+    // Use the new function that:
+    // 1. Gets Microsoft user ID
+    // 2. Finds all git_accounts for that user
+    // 3. Finds all git_repo_mappings for those accounts
+    // 4. Fetches commits from each mapped repository
+    const results = await gitService.fetchCommitsForUser(
+      props.microsoftUserId,
+      effectivePassphrase,
+      { since }
+    )
+    
+    console.log('[DEBUG] Fetched commits from', results.length, 'repositories')
+    
+    // Process all commits into draft entries
+    const allDraftEntries: DraftEntry[] = []
+    
+    for (const result of results) {
+      if (result.commits.length > 0) {
+        const entries = await processCommits(result.commits, result.mapping)
+        allDraftEntries.push(...entries)
       }
     }
     
-    commits.value = allCommits
-    draftEntries.value = await processCommits(allCommits)
+    draftEntries.value = allDraftEntries
     
-    console.log('[DEBUG] Total commits fetched:', allCommits.length)
+    console.log('[DEBUG] Total entries:', allDraftEntries.length)
     
-    if (allCommits.length === 0 && mappedRepos.length > 0) {
-      console.log(`[DEBUG] No commits matched. Check console above for available authors.`)
-      error.value = `No commits found for author "${mappedRepos[0]?.commitAuthor || 'unknown'}". Check browser console (F12) to see available authors, then update your author name in ⚙️ Git Settings.`
+    if (allDraftEntries.length === 0 && results.length > 0) {
+      error.value = 'No commits found. Try adjusting the date range or check your repository permissions.'
     }
     
     // Smart review: if any day > 8h, show warning
     const dailyTotals = new Map<string, number>()
     for (const entry of draftEntries.value) {
-      const dateKey = format(entry.date, 'yyyy-MM-dd')
-      dailyTotals.set(dateKey, (dailyTotals.get(dateKey) || 0) + entry.hours)
+      if (entry.selected) {
+        const dateKey = format(entry.date, 'yyyy-MM-dd')
+        dailyTotals.set(dateKey, (dailyTotals.get(dateKey) || 0) + entry.hours)
+      }
     }
     
     const highDays = Array.from(dailyTotals.entries())
@@ -342,13 +158,39 @@ async function fetchCommits() {
       error.value = `⚠️ High hours detected on: ${highDays.join(', ')}. Please review.`
     }
     
+    // Store passphrase if it worked
+    if (passphrase) {
+      encryptionService.storePassphrase(passphrase)
+    }
+    
   } catch (err: any) {
     console.error('[DEBUG] Fetch error:', err)
-    error.value = `Failed to fetch commits: ${err.message}`
-    console.error(err)
+    
+    // Check if it's a decryption error
+    if (err.message?.includes('decrypt') || err.message?.includes('password') || err.message?.includes('passphrase')) {
+      error.value = 'Failed to decrypt Git token. Please check your passphrase.'
+      encryptionService.clearStoredPassphrase()
+      showPassphrasePrompt.value = true
+    } else {
+      error.value = `Failed to fetch commits: ${err.message}`
+    }
   } finally {
     loading.value = false
   }
+}
+
+async function fetchCommits() {
+  await fetchCommitsWithPassphrase()
+}
+
+function handlePassphraseSubmit(passphrase: string) {
+  showPassphrasePrompt.value = false
+  fetchCommitsWithPassphrase(passphrase)
+}
+
+function handlePassphraseCancel() {
+  showPassphrasePrompt.value = false
+  loading.value = false
 }
 
 function toggleAllInDay(date: Date, selected: boolean) {
@@ -387,13 +229,12 @@ function handleImport() {
   const selected = draftEntries.value.filter(e => e.selected)
   
   const entries = selected.map(entry => {
-    const repo = props.repos.find(r => r.name === entry.repo)
-    const projectId = repo?.mappedPlanId || ''
-    const bucketId = repo?.mappedBucketId || ''
+    // Find the mapping for this repo to get plan/bucket
+    const mapping = props.mappings.find(m => m.repo_full_name === entry.repoFullName)
     
     return {
-      projectId,
-      bucketId,
+      projectId: mapping?.plan_id || '',
+      bucketId: mapping?.bucket_id || '',
       description: entry.message,
       hours: hoursToArray(entry.hours),
       date: entry.date
@@ -429,8 +270,11 @@ const totalSelectedHours = computed(() =>
 const totalEntries = computed(() => draftEntries.value.length)
 const selectedCount = computed(() => draftEntries.value.filter(e => e.selected).length)
 
+const hasPassphrase = computed(() => encryptionService.hasValidPassphrase())
+
 onMounted(() => {
-  if (props.repos.length > 0) {
+  // Auto-fetch if we have mappings and passphrase
+  if (props.mappings.length > 0 && hasPassphrase.value) {
     fetchCommits()
   }
 })
@@ -459,14 +303,14 @@ onMounted(() => {
         {{ error }}
       </div>
       
-      <!-- No repos configured -->
-      <div v-if="props.repos.length === 0" class="empty-state">
-        <p>No Git repositories configured.</p>
-        <p>Go to <strong>⚙️ Git Settings</strong> to add your GitHub or GitLab accounts.</p>
+      <!-- No accounts configured -->
+      <div v-if="accounts.length === 0" class="empty-state">
+        <p>No Git accounts configured.</p>
+        <p>Go to <strong>⚙️ Git Settings</strong> to add your Git accounts.</p>
       </div>
       
-      <!-- No mapped repos -->
-      <div v-else-if="!props.repos.some(r => r.mappedPlanId)" class="empty-state">
+      <!-- No mappings configured -->
+      <div v-else-if="mappings.length === 0" class="empty-state">
         <p>No repositories mapped to projects.</p>
         <p>Go to <strong>⚙️ Git Settings</strong> and map your repositories to Planner projects.</p>
       </div>
@@ -512,23 +356,15 @@ onMounted(() => {
                   <div class="entry-message" :title="entry.message">
                     {{ entry.message.length > 60 ? entry.message.slice(0, 60) + '...' : entry.message }}
                   </div>
-                  <div class="entry-stats">
-                    <span v-if="entry.stats.filesChanged > 0" class="stat-files" title="Files changed">
-                      {{ entry.stats.filesChanged }} file{{ entry.stats.filesChanged > 1 ? 's' : '' }}
-                    </span>
-                    <span v-if="entry.stats.totalLines > 0" class="stat-lines" title="Lines changed">
-                      {{ entry.stats.additions > 0 ? `+${entry.stats.additions}` : '' }}{{ entry.stats.deletions > 0 ? ` -${entry.stats.deletions}` : '' }}
-                    </span>
-                    <span v-if="entry.stats.filesChanged === 0" class="stat-unknown">no stats</span>
+                  <div class="entry-commits">
                     <a 
                       :href="entry.commit.url" 
                       target="_blank" 
                       rel="noopener" 
                       class="commit-link"
                       @click.stop
-                      title="View commit"
                     >
-                      {{ entry.commit.sha.slice(0, 7) }}
+                      {{ entry.commit.sha.substring(0, 7) }}
                     </a>
                   </div>
                 </div>
@@ -539,9 +375,7 @@ onMounted(() => {
                     @click="adjustHours(entry, -0.5)"
                     :disabled="entry.hours <= 0.5"
                   >-</button>
-                  <span class="hours-value" :class="{ 'auto-calc': entry.stats.filesChanged > 0 }">
-                    {{ entry.hours }}h
-                  </span>
+                  <span class="hours-value">{{ entry.hours }}h</span>
                   <button 
                     class="btn-adjust" 
                     @click="adjustHours(entry, 0.5)"
@@ -555,7 +389,7 @@ onMounted(() => {
       </div>
       
       <!-- Empty State -->
-      <div v-else-if="!loading && commits.length === 0" class="empty-state">
+      <div v-else-if="!loading && !showPassphrasePrompt" class="empty-state">
         No commits found. Adjust the date range and try again.
       </div>
       
@@ -572,6 +406,15 @@ onMounted(() => {
       </footer>
     </div>
   </div>
+
+  <!-- Passphrase Prompt -->
+  <PassphrasePrompt
+    :show="showPassphrasePrompt"
+    title="Enter Encryption Passphrase"
+    message="Your Git token is encrypted. Enter your passphrase to decrypt it and fetch commits."
+    @submit="handlePassphraseSubmit"
+    @cancel="handlePassphraseCancel"
+  />
 </template>
 
 <style scoped>
@@ -801,50 +644,17 @@ onMounted(() => {
   margin-top: 0.25rem;
 }
 
-.entry-stats {
-  font-size: 0.75rem;
-  color: #718096;
-  margin-top: 0.25rem;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.stat-files {
-  color: #4299e1;
-  font-weight: 500;
-}
-
-.stat-lines {
-  color: #48bb78;
-  font-weight: 500;
-}
-
-.stat-lines::before {
-  content: '•';
-  margin-right: 0.25rem;
-  color: #cbd5e0;
-}
-
-.stat-unknown {
-  color: #a0aec0;
-  font-style: italic;
-}
-
 .commit-link {
   color: #667eea;
   text-decoration: none;
   font-family: monospace;
-  font-size: 0.7rem;
   background: #edf2f7;
   padding: 0.125rem 0.375rem;
   border-radius: 4px;
-  margin-left: auto;
 }
 
 .commit-link:hover {
   background: #e2e8f0;
-  color: #5a67d8;
 }
 
 .entry-hours-control {
@@ -879,10 +689,6 @@ onMounted(() => {
   color: #2d3748;
   min-width: 40px;
   text-align: center;
-}
-
-.hours-value.auto-calc {
-  color: #667eea;
 }
 
 /* Empty State */

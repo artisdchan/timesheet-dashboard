@@ -2,10 +2,14 @@
 import { ref, onMounted } from 'vue'
 import LoginView from './components/LoginView.vue'
 import DailyTimesheetView from './components/DailyTimesheetView.vue'
+import GitSettings from './components/GitSettings.vue'
+import GitImportModal from './components/GitImportModal.vue'
 import authService from './services/auth'
 import graphService from './services/graph'
 import { taskToTimeEntry } from './services/timeParser'
 import type { TimeEntry, PlannerPlan, PlannerBucket } from './types/planner'
+import type { GitAccount, GitRepoMapping } from './types/git'
+import { supabaseService, setRLSUserId } from './services/supabase'
 
 // State
 const isAuthenticated = ref(false)
@@ -15,6 +19,13 @@ const plans = ref<PlannerPlan[]>([])
 const buckets = ref<PlannerBucket[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
+const currentUserId = ref<string>('')
+
+// Git integration state
+const showGitSettings = ref(false)
+const showGitImport = ref(false)
+const gitAccounts = ref<GitAccount[]>([])
+const gitMappings = ref<GitRepoMapping[]>([])
 
 // Cache for bucket lookup
 const bucketMap = ref(new Map<string, PlannerBucket>())
@@ -26,7 +37,14 @@ onMounted(async () => {
     isAuthenticated.value = authService.isAuthenticated()
     
     if (isAuthenticated.value) {
+      const me = await graphService.getMe()
+      currentUserId.value = me.id
+      
+      // Set RLS context for Supabase
+      await setRLSUserId(me.id)
+      
       await loadPlans()
+      await loadGitData()
     }
   } catch (err) {
     console.error('Initialization error:', err)
@@ -35,6 +53,22 @@ onMounted(async () => {
     isInitializing.value = false
   }
 })
+
+async function loadGitData() {
+  if (!currentUserId.value) return
+  
+  try {
+    // Ensure RLS context is set
+    await setRLSUserId(currentUserId.value)
+    
+    // Load Git accounts and mappings from Supabase
+    gitAccounts.value = await supabaseService.accounts.getAccounts(currentUserId.value)
+    gitMappings.value = await supabaseService.mappings.getMappings(currentUserId.value)
+  } catch (err) {
+    console.error('Failed to load Git data:', err)
+    // Don't show error - Git integration is optional
+  }
+}
 
 async function handleLogin() {
   error.value = null
@@ -309,20 +343,25 @@ async function handleDeleteEntry(taskId: string, etag: string) {
 
 async function handleRefresh() {
   await loadEntries()
+  // Also refresh Git data
+  await loadGitData()
 }
 
 // Handle Git import - batch create entries from git commits
 async function handleGitImport(
-  entries: Array<{ projectId: string; bucketId: string; description: string; hours: number[]; date: Date }>
+  importEntries: Array<{ projectId: string; bucketId: string; description: string; hours: number[]; date: Date }>
 ) {
   loading.value = true
   error.value = null
+  
+  // Close the import modal
+  showGitImport.value = false
   
   try {
     let successCount = 0
     let failCount = 0
     
-    for (const entry of entries) {
+    for (const entry of importEntries) {
       try {
         // Reuse the add entry logic
         await handleAddEntry(entry)
@@ -335,6 +374,9 @@ async function handleGitImport(
     
     if (failCount > 0) {
       error.value = `Imported ${successCount} entries, ${failCount} failed`
+    } else if (successCount > 0) {
+      // Optional: Show success message
+      console.log(`Successfully imported ${successCount} entries from Git`)
     }
     
     // Refresh to show new entries
@@ -346,6 +388,27 @@ async function handleGitImport(
   } finally {
     loading.value = false
   }
+}
+
+// Open Git Settings modal
+function openGitSettings() {
+  showGitSettings.value = true
+}
+
+// Open Git Import modal
+function openGitImport() {
+  if (gitMappings.value.length === 0) {
+    error.value = 'No Git repositories mapped. Please configure Git Settings first.'
+    return
+  }
+  showGitImport.value = true
+}
+
+// Handle Git settings close
+function handleGitSettingsClose() {
+  showGitSettings.value = false
+  // Refresh Git data after settings close
+  loadGitData()
 }
 </script>
 
@@ -385,9 +448,32 @@ async function handleGitImport(
       @add-entry="handleAddEntry"
       @edit-entry="handleEditEntry"
       @delete-entry="handleDeleteEntry"
-      @git-import="handleGitImport"
+      @git-import="openGitImport"
+      @git-settings="openGitSettings"
       @refresh="handleRefresh"
       @logout="handleLogout"
+    />
+
+    <!-- Git Settings Modal -->
+    <GitSettings
+      v-if="showGitSettings && currentUserId"
+      :microsoft-user-id="currentUserId"
+      :plans="plans.map(p => ({ id: p.id, title: p.title }))"
+      :buckets="buckets.map(b => ({ id: b.id, name: b.name, planId: b.planId }))"
+      @close="handleGitSettingsClose"
+      @error="(msg) => error = msg"
+    />
+
+    <!-- Git Import Modal -->
+    <GitImportModal
+      v-if="showGitImport && currentUserId"
+      :microsoft-user-id="currentUserId"
+      :accounts="gitAccounts"
+      :mappings="gitMappings"
+      :plans="plans.map(p => ({ id: p.id, title: p.title }))"
+      :buckets="buckets.map(b => ({ id: b.id, name: b.name, planId: b.planId }))"
+      @import="handleGitImport"
+      @close="showGitImport = false"
     />
   </div>
 </template>
