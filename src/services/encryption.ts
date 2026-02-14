@@ -15,8 +15,8 @@ const ITERATIONS = 100000;        // PBKDF2 iterations
 const PASSPHRASE_STORAGE_KEY = 'timesheet_git_passphrase';
 const PASSPHRASE_EXPIRY_KEY = 'timesheet_git_passphrase_expiry';
 
-// Session duration: 8 hours
-const SESSION_DURATION_MS = 8 * 60 * 60 * 1000;
+// Session duration: 1 hour
+const SESSION_DURATION_MS = 1 * 60 * 60 * 1000;
 
 /**
  * Derive an encryption key from passphrase and salt using PBKDF2
@@ -177,7 +177,7 @@ export async function decryptToken(
  * Store the passphrase securely in sessionStorage with expiry
  * 
  * @param passphrase - The user's passphrase
- * @param durationMs - How long to keep it (default: 8 hours)
+ * @param durationMs - How long to keep it (default: 1 hour)
  */
 export function storePassphrase(passphrase: string, durationMs: number = SESSION_DURATION_MS): void {
   try {
