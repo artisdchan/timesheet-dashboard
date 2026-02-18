@@ -255,6 +255,7 @@ export async function listGitBranches(
 
 /**
  * Fetch commits from a repository
+ * Automatically filters by author using the account's display_name if not specified
  */
 export async function fetchGitCommits(
   microsoftUserId: string,
@@ -271,12 +272,20 @@ export async function fetchGitCommits(
   }
 
   const client = await getGitClient(account, passphrase);
-  return client.fetchCommits(repoFullName, options);
+  
+  // Apply author filter using display_name if not already specified
+  const fetchOptions: FetchCommitsOptions = {
+    author: account.display_name,
+    ...options,
+  };
+  
+  return client.fetchCommits(repoFullName, fetchOptions);
 }
 
 /**
  * Fetch commits for a specific mapping (uses mapping configuration)
  * Fetches commits only from the default_branch stored in Supabase
+ * Filters by author using the account's display_name
  */
 export async function fetchCommitsForMapping(
   microsoftUserId: string,
@@ -308,9 +317,11 @@ export async function fetchCommitsForMapping(
   const client = await getGitClient(account, passphrase);
 
   // Build fetch options with the default_branch from Supabase
+  // Filter by author using the account's display_name
   const fetchOptions: FetchCommitsOptions = {
     branch: mapping.default_branch,
     per_page: 100,
+    author: account.display_name,
     ...options,
   };
 
@@ -319,7 +330,7 @@ export async function fetchCommitsForMapping(
     fetchOptions.since = new Date(mapping.import_since);
   }
 
-  // Fetch commits only from the configured default_branch
+  // Fetch commits only from the configured default_branch and author
   const commits = await client.fetchCommits(mapping.repo_full_name, fetchOptions);
 
   // Apply commit pattern filter if configured
@@ -393,7 +404,10 @@ export async function fetchCommitsForUser(
           fetchOptions.since = new Date(mapping.import_since);
         }
 
-        console.log('[DEBUG] Fetching from:', mapping.repo_full_name, 'branch:', mapping.default_branch);
+        console.log('[DEBUG] Fetching from:', mapping.repo_full_name, 'branch:', mapping.default_branch, 'author:', account.display_name);
+        
+        // Add author filter using the account's display_name
+        fetchOptions.author = account.display_name;
         
         let commits = await client.fetchCommits(mapping.repo_full_name, fetchOptions);
 
