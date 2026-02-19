@@ -45,6 +45,7 @@ const sinceDate = ref(format(new Date(), 'yyyy-MM-dd'))
 const commits = ref<GitCommit[]>([])
 const draftEntries = ref<DraftEntry[]>([])
 const showPassphrasePrompt = ref(false)
+const expandedDays = ref<Set<string>>(new Set())
 
 // Process commits - create one draft entry per commit
 async function processCommits(commitsList: GitCommit[], mapping: GitRepoMapping) {
@@ -135,6 +136,13 @@ async function fetchCommitsWithPassphrase(passphrase?: string) {
     
     draftEntries.value = allDraftEntries
     
+    // Auto-expand all days when data is loaded
+    const allDateKeys = new Set<string>()
+    for (const entry of allDraftEntries) {
+      allDateKeys.add(entry.date.toISOString())
+    }
+    expandedDays.value = allDateKeys
+    
     console.log('[DEBUG] Total entries:', allDraftEntries.length)
     
     if (allDraftEntries.length === 0 && results.length > 0) {
@@ -199,6 +207,18 @@ function toggleAllInDay(date: Date, selected: boolean) {
       entry.selected = selected
     }
   }
+}
+
+function toggleDayExpansion(dateKey: string) {
+  if (expandedDays.value.has(dateKey)) {
+    expandedDays.value.delete(dateKey)
+  } else {
+    expandedDays.value.add(dateKey)
+  }
+}
+
+function isDayExpanded(dateKey: string): boolean {
+  return expandedDays.value.has(dateKey)
 }
 
 function adjustHours(entry: DraftEntry, delta: number) {
@@ -324,8 +344,28 @@ onMounted(() => {
         
         <div class="entries-by-day">
           <div v-for="day in entriesByDate" :key="day.date.toISOString()" class="day-group">
-            <div class="day-header">
-              <label class="day-checkbox">
+            <div 
+              class="day-header" 
+              :class="{ expanded: isDayExpanded(day.date.toISOString()) }"
+              @click="toggleDayExpansion(day.date.toISOString())"
+            >
+              <span class="expand-icon">
+                <svg 
+                  xmlns="http://www.w3.org/2000/svg" 
+                  width="16" 
+                  height="16" 
+                  viewBox="0 0 24 24" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  stroke-width="2" 
+                  stroke-linecap="round" 
+                  stroke-linejoin="round"
+                  :class="{ rotated: isDayExpanded(day.date.toISOString()) }"
+                >
+                  <polyline points="9 18 15 12 9 6"></polyline>
+                </svg>
+              </span>
+              <label class="day-checkbox" @click.stop>
                 <input 
                   type="checkbox" 
                   :checked="day.entries.every(e => e.selected)"
@@ -333,17 +373,27 @@ onMounted(() => {
                 />
                 <strong>{{ format(day.date, 'EEEE, MMMM d') }}</strong>
               </label>
-              <span class="day-total" :class="{ 'over-8': day.totalHours > 8 }">
+              <span class="entry-count">{{ day.entries.length }} commit{{ day.entries.length > 1 ? 's' : '' }}</span>
+              <span class="day-total" :class="{ 
+                'exact-8': day.totalHours === 8,
+                'not-8': day.totalHours !== 8
+              }">
                 {{ day.totalHours.toFixed(1) }}h
+                <span v-if="day.totalHours === 8" class="status-icon">✓</span>
+                <span v-else class="status-icon">⚠</span>
               </span>
             </div>
             
-            <div class="day-entries">
+            <div v-show="isDayExpanded(day.date.toISOString())" class="day-entries">
               <div 
                 v-for="entry in day.entries" 
                 :key="entry.id"
                 class="entry-row"
-                :class="{ selected: entry.selected }"
+                :class="{ 
+                  selected: entry.selected,
+                  'hours-exact-8': day.totalHours === 8,
+                  'hours-not-8': day.totalHours !== 8
+                }"
               >
                 <input 
                   type="checkbox" 
@@ -564,11 +614,47 @@ onMounted(() => {
 
 .day-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
   padding: 0.75rem 1rem;
   background: #f7fafc;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.2s;
+  gap: 0.5rem;
+}
+
+.day-header:hover {
+  background: #edf2f7;
+}
+
+.day-header.expanded {
+  border-bottom-color: #e2e8f0;
+}
+
+.expand-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #718096;
+  transition: transform 0.2s;
+}
+
+.expand-icon svg {
+  transition: transform 0.2s;
+}
+
+.expand-icon svg.rotated {
+  transform: rotate(90deg);
+}
+
+.entry-count {
+  font-size: 0.75rem;
+  color: #718096;
+  background: #e2e8f0;
+  padding: 0.125rem 0.5rem;
+  border-radius: 12px;
+  margin-left: auto;
+  margin-right: 0.5rem;
 }
 
 .day-checkbox {
@@ -584,11 +670,22 @@ onMounted(() => {
 
 .day-total {
   font-weight: 700;
+  color: #4a5568;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.day-total.exact-8 {
   color: #48bb78;
 }
 
-.day-total.over-8 {
-  color: #dd6b20;
+.day-total.not-8 {
+  color: #f56565;
+}
+
+.status-icon {
+  font-size: 0.875rem;
 }
 
 /* Entry Row */
@@ -611,6 +708,24 @@ onMounted(() => {
 
 .entry-row:not(.selected) {
   opacity: 0.6;
+}
+
+.entry-row.hours-exact-8 {
+  background: #c6f6d5;
+  border-left: 4px solid #48bb78;
+}
+
+.entry-row.hours-exact-8:hover {
+  background: #9ae6b4;
+}
+
+.entry-row.hours-not-8 {
+  background: #fed7d7;
+  border-left: 4px solid #f56565;
+}
+
+.entry-row.hours-not-8:hover {
+  background: #fc8181;
 }
 
 .entry-checkbox {
