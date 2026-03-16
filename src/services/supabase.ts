@@ -87,27 +87,24 @@ export const gitAccountsService = {
   /**
    * Create a new Git account
    * Note: token should already be encrypted before calling this
+   * Uses RPC function to avoid RLS connection pooling issues
    */
   async createAccount(
     microsoftUserId: string,
     input: CreateGitAccountInput & { token_encrypted: string; token_iv: string }
   ): Promise<GitAccount> {
     const { data, error } = await supabase
-      .from('git_accounts')
-      .insert({
-        microsoft_user_id: microsoftUserId,
-        provider: input.provider,
-        display_name: input.display_name,
-        is_self_hosted: input.is_self_hosted,
-        base_url: input.base_url || null,
-        api_url: input.api_url || null,
-        username: input.username || null,
-        token_encrypted: input.token_encrypted,
-        token_iv: input.token_iv,
-        is_active: true,
-      })
-      .select()
-      .single();
+      .rpc('create_git_account', {
+        p_microsoft_user_id: microsoftUserId,
+        p_provider: input.provider,
+        p_display_name: input.display_name,
+        p_token_encrypted: input.token_encrypted,
+        p_token_iv: input.token_iv,
+        p_is_self_hosted: input.is_self_hosted ?? false,
+        p_base_url: input.base_url || null,
+        p_api_url: input.api_url || null,
+        p_username: input.username || null,
+      });
 
     if (error) {
       console.error('Error creating Git account:', error);
@@ -119,26 +116,22 @@ export const gitAccountsService = {
 
   /**
    * Update a Git account
+   * Uses RPC function to avoid RLS connection pooling issues
    */
   async updateAccount(
     id: string,
+    microsoftUserId: string,
     input: Partial<UpdateGitAccountInput> & { token_encrypted?: string; token_iv?: string }
   ): Promise<GitAccount> {
-    const updates: Record<string, unknown> = {};
-    
-    if (input.display_name !== undefined) updates.display_name = input.display_name;
-    if (input.is_active !== undefined) updates.is_active = input.is_active;
-    if (input.token_encrypted !== undefined) {
-      updates.token_encrypted = input.token_encrypted;
-      updates.token_iv = input.token_iv;
-    }
-
     const { data, error } = await supabase
-      .from('git_accounts')
-      .update(updates)
-      .eq('id', id)
-      .select()
-      .single();
+      .rpc('update_git_account', {
+        p_account_id: id,
+        p_microsoft_user_id: microsoftUserId,
+        p_display_name: input.display_name ?? null,
+        p_token_encrypted: input.token_encrypted ?? null,
+        p_token_iv: input.token_iv ?? null,
+        p_is_active: input.is_active ?? null,
+      });
 
     if (error) {
       console.error('Error updating Git account:', error);
@@ -150,12 +143,14 @@ export const gitAccountsService = {
 
   /**
    * Delete a Git account (cascades to repo mappings)
+   * Uses RPC function to avoid RLS connection pooling issues
    */
-  async deleteAccount(id: string): Promise<void> {
+  async deleteAccount(id: string, microsoftUserId: string): Promise<void> {
     const { error } = await supabase
-      .from('git_accounts')
-      .delete()
-      .eq('id', id);
+      .rpc('delete_git_account', {
+        p_account_id: id,
+        p_microsoft_user_id: microsoftUserId,
+      });
 
     if (error) {
       console.error('Error deleting Git account:', error);
@@ -229,22 +224,26 @@ export const gitRepoMappingsService = {
 
   /**
    * Create a new repo mapping
+   * Uses RPC function to avoid RLS connection pooling issues
    */
-  async createMapping(input: CreateRepoMappingInput): Promise<GitRepoMapping> {
+  async createMapping(microsoftUserId: string, input: CreateRepoMappingInput): Promise<GitRepoMapping> {
+    // Convert ISO date string to YYYY-MM-DD format for Postgres date type
+    const importSinceDate = input.import_since 
+      ? input.import_since.split('T')[0] 
+      : null;
+
     const { data, error } = await supabase
-      .from('git_repo_mappings')
-      .insert({
-        git_account_id: input.git_account_id,
-        repo_full_name: input.repo_full_name,
-        repo_url: input.repo_url,
-        default_branch: input.default_branch || 'main',
-        plan_id: input.plan_id,
-        bucket_id: input.bucket_id,
-        import_since: input.import_since || null,
-        commit_pattern: input.commit_pattern || null,
-      })
-      .select()
-      .single();
+      .rpc('create_git_repo_mapping', {
+        p_microsoft_user_id: microsoftUserId,
+        p_git_account_id: input.git_account_id,
+        p_repo_full_name: input.repo_full_name,
+        p_repo_url: input.repo_url,
+        p_plan_id: input.plan_id,
+        p_bucket_id: input.bucket_id,
+        p_default_branch: input.default_branch || 'main',
+        p_import_since: importSinceDate,
+        p_commit_pattern: input.commit_pattern || null,
+      });
 
     if (error) {
       console.error('Error creating repo mapping:', error);
@@ -256,22 +255,24 @@ export const gitRepoMappingsService = {
 
   /**
    * Update a repo mapping
+   * Uses RPC function to avoid RLS connection pooling issues
    */
-  async updateMapping(id: string, input: UpdateRepoMappingInput): Promise<GitRepoMapping> {
-    const updates: Record<string, unknown> = {};
-    
-    if (input.default_branch !== undefined) updates.default_branch = input.default_branch;
-    if (input.plan_id !== undefined) updates.plan_id = input.plan_id;
-    if (input.bucket_id !== undefined) updates.bucket_id = input.bucket_id;
-    if (input.import_since !== undefined) updates.import_since = input.import_since;
-    if (input.commit_pattern !== undefined) updates.commit_pattern = input.commit_pattern;
+  async updateMapping(id: string, microsoftUserId: string, input: UpdateRepoMappingInput): Promise<GitRepoMapping> {
+    // Convert ISO date string to YYYY-MM-DD format for Postgres date type
+    const importSinceDate = input.import_since 
+      ? input.import_since.split('T')[0] 
+      : null;
 
     const { data, error } = await supabase
-      .from('git_repo_mappings')
-      .update(updates)
-      .eq('id', id)
-      .select()
-      .single();
+      .rpc('update_git_repo_mapping', {
+        p_mapping_id: id,
+        p_microsoft_user_id: microsoftUserId,
+        p_default_branch: input.default_branch ?? null,
+        p_plan_id: input.plan_id ?? null,
+        p_bucket_id: input.bucket_id ?? null,
+        p_import_since: importSinceDate,
+        p_commit_pattern: input.commit_pattern ?? null,
+      });
 
     if (error) {
       console.error('Error updating repo mapping:', error);
@@ -283,12 +284,14 @@ export const gitRepoMappingsService = {
 
   /**
    * Delete a repo mapping
+   * Uses RPC function to avoid RLS connection pooling issues
    */
-  async deleteMapping(id: string): Promise<void> {
+  async deleteMapping(id: string, microsoftUserId: string): Promise<void> {
     const { error } = await supabase
-      .from('git_repo_mappings')
-      .delete()
-      .eq('id', id);
+      .rpc('delete_git_repo_mapping', {
+        p_mapping_id: id,
+        p_microsoft_user_id: microsoftUserId,
+      });
 
     if (error) {
       console.error('Error deleting repo mapping:', error);

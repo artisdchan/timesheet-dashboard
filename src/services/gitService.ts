@@ -57,7 +57,7 @@ export async function addGitAccount(
   // Encrypt the token
   const encrypted = await encryptionService.encryptToken(input.token, passphrase);
 
-  // Store in database
+  // Store in database (no need to set RLS - RPC function handles it)
   return supabaseService.accounts.createAccount(microsoftUserId, {
     ...input,
     api_url: apiUrl,
@@ -99,9 +99,7 @@ export async function updateGitAccount(
   },
   passphrase?: string
 ): Promise<GitAccount> {
-  await setRLSUserId(microsoftUserId);
-
-  const updateData: Parameters<typeof supabaseService.accounts.updateAccount>[1] = {};
+  const updateData: Parameters<typeof supabaseService.accounts.updateAccount>[2] = {};
 
   if (updates.displayName !== undefined) {
     updateData.display_name = updates.displayName;
@@ -118,7 +116,8 @@ export async function updateGitAccount(
     updateData.token_iv = encrypted.iv;
   }
 
-  return supabaseService.accounts.updateAccount(accountId, updateData);
+  // RPC function handles RLS, no need to setRLSUserId
+  return supabaseService.accounts.updateAccount(accountId, microsoftUserId, updateData);
 }
 
 /**
@@ -128,8 +127,8 @@ export async function deleteGitAccount(
   microsoftUserId: string,
   accountId: string
 ): Promise<void> {
-  await setRLSUserId(microsoftUserId);
-  return supabaseService.accounts.deleteAccount(accountId);
+  // RPC function handles RLS, no need to setRLSUserId
+  return supabaseService.accounts.deleteAccount(accountId, microsoftUserId);
 }
 
 // ============================================
@@ -143,8 +142,8 @@ export async function createRepoMapping(
   microsoftUserId: string,
   input: CreateRepoMappingInput
 ): Promise<GitRepoMapping> {
-  await setRLSUserId(microsoftUserId);
-  return supabaseService.mappings.createMapping(input);
+  // RPC function handles RLS, no need to setRLSUserId
+  return supabaseService.mappings.createMapping(microsoftUserId, input);
 }
 
 /**
@@ -174,8 +173,8 @@ export async function updateRepoMapping(
   mappingId: string,
   updates: Partial<Omit<CreateRepoMappingInput, 'git_account_id'>>
 ): Promise<GitRepoMapping> {
-  await setRLSUserId(microsoftUserId);
-  return supabaseService.mappings.updateMapping(mappingId, updates);
+  // RPC function handles RLS, no need to setRLSUserId
+  return supabaseService.mappings.updateMapping(mappingId, microsoftUserId, updates);
 }
 
 /**
@@ -185,8 +184,8 @@ export async function deleteRepoMapping(
   microsoftUserId: string,
   mappingId: string
 ): Promise<void> {
-  await setRLSUserId(microsoftUserId);
-  return supabaseService.mappings.deleteMapping(mappingId);
+  // RPC function handles RLS, no need to setRLSUserId
+  return supabaseService.mappings.deleteMapping(mappingId, microsoftUserId);
 }
 
 // ============================================
